@@ -2254,7 +2254,8 @@ function startPlaybackAnimation() {
 }
 
 function forceSeekToLoopStart(reason = 'unknown') {
-  if (!isLoopActive() || !video.duration || !Number.isFinite(video.duration)) return;
+  const hasA = loopState.enabledA && video.duration && Number.isFinite(video.duration) && loopState.start < video.duration;
+  if (!hasA) return;
   video.currentTime = loopState.start;
   updateTimeline(true);
   pushPipelineDebug('ab:seek-to-a', `reason=${reason} at=${loopState.start.toFixed(3)}`);
@@ -2746,29 +2747,6 @@ function startWaveformPointerGesture(event) {
         setStatus(`Adjusting ${waveformHandleDrag.handle}: ${formatTime(loopState.start)} → ${formatTime(loopState.end)}`);
         return;
       }
-
-      const anchorRatio = getViewportPointerRatio({
-        ...event,
-        clientX: waveformPointerGesture.lastX,
-        clientY: waveformPointerGesture.lastY,
-      });
-      const anchorTime = anchorRatio * video.duration;
-      loopState.enabledA = true;
-      loopState.enabledB = true;
-      loopState.start = anchorTime;
-      loopState.end = Math.min(video.duration, anchorTime + 0.2);
-      zoomLevel = 10;
-      zoomSlider.value = '10';
-      updateZoomLabel();
-      updateViewportCursorVisibility();
-      lastDrawnProgress = -1;
-      video.currentTime = loopState.start;
-      updateTimeline(true);
-      pushPipelineDebug('waveform:v2:longpress-range', `pointer=${event.pointerType} start=${loopState.start.toFixed(3)} end=${loopState.end.toFixed(3)} zoom=10`);
-      updateLoopButtons();
-      drawWaveform(video.duration ? video.currentTime / video.duration : 0);
-      setStatus(`A-B loop: ${formatTime(loopState.start)} → ${formatTime(loopState.end)}`);
-      return;
     }
   }, 420);
   pushPipelineDebug('waveform:v2:longpress:timer:set', `delay=420 id=${event.pointerId}`);
@@ -2877,6 +2855,15 @@ function enforceLoopPlayback() {
     return;
   }
 
+  // B-only: pause when playback reaches B
+  if (loopState.enabledB && !loopState.enabledA && video.currentTime >= loopState.end) {
+    pushPipelineDebug('ab:b-only:stop', `current=${video.currentTime.toFixed(3)} end=${loopState.end.toFixed(3)}`);
+    video.pause();
+    updatePlayPauseButton();
+    setStatus(`Stopped at B: ${formatTime(loopState.end)}`);
+    return;
+  }
+
   if (!isLoopActive()) return;
 
   const loopEpsilon = 0.03;
@@ -2954,7 +2941,10 @@ async function togglePlayPause() {
       await startShortAudioLoop();
       return;
     }
-    if (isLoopActive() && (video.currentTime < loopState.start || video.currentTime >= loopState.end)) {
+    const seekToA = isLoopActive()
+      ? (video.currentTime < loopState.start || video.currentTime >= loopState.end)
+      : (loopState.enabledA && !loopState.enabledB);
+    if (seekToA) {
       forceSeekToLoopStart('toggle-play');
     }
     const playResult = video.play();
