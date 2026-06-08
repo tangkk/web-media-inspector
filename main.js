@@ -90,6 +90,7 @@ let playbackRate = 1;
 let isPointerSeekingWaveform = false;
 let waveformPointerGesture = null;
 let waveformLongPressTimer = null;
+let waveformPendingClick = null;
 let waveformPreviewLoopInterval = null;
 let isWaveformLongPressPreviewActive = false;
 let waveformLongPressPreviewPlayToken = 0;
@@ -2834,8 +2835,36 @@ function finishWaveformPointerGesture(event) {
   }
 
   if (!triggeredLongPress) {
-    pushPipelineDebug('waveform:seek:on-release', `pointer=${pointerType}`);
-    handleSeekFromViewportPointer(event);
+    if (waveformPendingClick !== null) {
+      // Second quick tap → double-click
+      clearTimeout(waveformPendingClick.timer);
+      waveformPendingClick = null;
+      const dblRatio = getViewportPointerRatio(event);
+      const dblTime = Math.max(0, Math.min(video.duration || 0, dblRatio * (video.duration || 0)));
+      pushPipelineDebug('waveform:dblclick', `pointer=${pointerType} playing=${!video.paused} time=${dblTime.toFixed(3)}`);
+      if (!video.paused) {
+        video.pause();
+        updatePlayPauseButton();
+        setStatus(`Paused at ${formatTime(dblTime)}`);
+      } else {
+        handleSeekByRatio(dblRatio);
+        video.play().catch((err) => pushPipelineDebug('waveform:dblclick:play:error', err?.message || String(err)));
+        setStatus(`Playing from ${formatTime(dblTime)}`);
+      }
+    } else {
+      // First tap — wait to see if a second tap follows (double-click detection)
+      const singleRatio = getViewportPointerRatio(event);
+      waveformPendingClick = {
+        timer: setTimeout(() => {
+          pushPipelineDebug('waveform:seek:on-release', `pointer=${pointerType}`);
+          if (waveformPendingClick) {
+            handleSeekByRatio(waveformPendingClick.ratio);
+            waveformPendingClick = null;
+          }
+        }, 300),
+        ratio: singleRatio,
+      };
+    }
   }
 
   stopWaveformLongPressPreview();
