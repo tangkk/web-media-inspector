@@ -2940,6 +2940,30 @@ function setLoopPointB() {
   setStatus(describeLoopState());
 }
 
+function toggleLoopPointA() {
+  if (loopState.enabledA) {
+    loopState.enabledA = false;
+    if (!loopState.enabledB) loopState.start = 0;
+    updateLoopButtons();
+    drawWaveform(video.currentTime / video.duration);
+    setStatus(describeLoopState());
+  } else {
+    setLoopPointA();
+  }
+}
+
+function toggleLoopPointB() {
+  if (loopState.enabledB) {
+    loopState.enabledB = false;
+    if (!loopState.enabledA) loopState.end = 0;
+    updateLoopButtons();
+    drawWaveform(video.currentTime / video.duration);
+    setStatus(describeLoopState());
+  } else {
+    setLoopPointB();
+  }
+}
+
 async function togglePlayPause() {
   if (!currentFile || !video.src) {
     pushPipelineDebug('playback:toggle:ignored', 'no current file');
@@ -3454,6 +3478,18 @@ window.addEventListener('keydown', (event) => {
   if (event.key === ']') {
     event.preventDefault();
     setLoopPointB();
+    return;
+  }
+
+  if (event.key === 'a') {
+    event.preventDefault();
+    toggleLoopPointA();
+    return;
+  }
+
+  if (event.key === 'b') {
+    event.preventDefault();
+    toggleLoopPointB();
     return;
   }
 
