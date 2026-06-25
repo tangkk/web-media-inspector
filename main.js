@@ -2994,9 +2994,7 @@ async function togglePlayPause() {
       await startShortAudioLoop();
       return;
     }
-    const seekToA = isLoopActive()
-      ? (video.currentTime < loopState.start || video.currentTime >= loopState.end)
-      : (loopState.enabledA && !loopState.enabledB);
+    const seekToA = isLoopActive() && (video.currentTime < loopState.start || video.currentTime >= loopState.end);
     if (seekToA) {
       forceSeekToLoopStart('toggle-play');
     }
@@ -3478,6 +3476,19 @@ window.addEventListener('keydown', (event) => {
       updatePlayPauseButton();
       drawWaveform(video.duration ? video.currentTime / video.duration : 0);
       setStatus(`Looping ${formatTime(loopState.start)} → ${formatTime(loopState.end)}`);
+    } else if (loopState.enabledA) {
+      forceSeekToLoopStart('restart-from-A');
+      const playResult = video.play();
+      if (playResult && typeof playResult.then === 'function') {
+        playResult.then(() => {
+          pushPipelineDebug('playback:restart-from-A:play:ok');
+        }).catch((error) => {
+          pushPipelineDebug('playback:restart-from-A:play:error', error?.message || String(error));
+        });
+      }
+      updatePlayPauseButton();
+      drawWaveform(video.duration ? video.currentTime / video.duration : 0);
+      setStatus(`Playing from A (${formatTime(loopState.start)})`);
     }
     return;
   }
