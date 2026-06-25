@@ -3463,6 +3463,25 @@ window.addEventListener('keydown', (event) => {
 
   if (isTypingTarget) return;
 
+  if (event.key === 'r') {
+    event.preventDefault();
+    if (isLoopActive()) {
+      forceSeekToLoopStart('restart-loop');
+      const playResult = video.play();
+      if (playResult && typeof playResult.then === 'function') {
+        playResult.then(() => {
+          pushPipelineDebug('playback:restart-loop:play:ok');
+        }).catch((error) => {
+          pushPipelineDebug('playback:restart-loop:play:error', error?.message || String(error));
+        });
+      }
+      updatePlayPauseButton();
+      drawWaveform(video.duration ? video.currentTime / video.duration : 0);
+      setStatus(`Looping ${formatTime(loopState.start)} → ${formatTime(loopState.end)}`);
+    }
+    return;
+  }
+
   if (event.code === 'Space') {
     event.preventDefault();
     togglePlayPause();
