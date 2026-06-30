@@ -3489,6 +3489,19 @@ window.addEventListener('keydown', (event) => {
       updatePlayPauseButton();
       drawWaveform(video.duration ? video.currentTime / video.duration : 0);
       setStatus(`Playing from A (${formatTime(loopState.start)})`);
+    } else {
+      video.currentTime = 0;
+      const playResult = video.play();
+      if (playResult && typeof playResult.then === 'function') {
+        playResult.then(() => {
+          pushPipelineDebug('playback:restart-from-beginning:play:ok');
+        }).catch((error) => {
+          pushPipelineDebug('playback:restart-from-beginning:play:error', error?.message || String(error));
+        });
+      }
+      updatePlayPauseButton();
+      drawWaveform(0);
+      setStatus('Playing from beginning');
     }
     return;
   }
