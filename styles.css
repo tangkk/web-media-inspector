@@ -298,6 +298,7 @@ body.debug-ui-enabled {
 
   .playlist-panel {
     grid-area: playlist;
+    align-self: stretch;
     display: block;
     min-width: 0;
     margin-top: 8px;
