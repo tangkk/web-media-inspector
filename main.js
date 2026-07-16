@@ -22,6 +22,10 @@ const currentTimeTextEl = document.getElementById('currentTimeText');
 const remainingTimeTextEl = document.getElementById('remainingTimeText');
 const openFileBtn = document.getElementById('openFileBtn');
 const clearBtn = document.getElementById('clearBtn');
+const playlistList = document.getElementById('playlistList');
+const playlistEmpty = document.getElementById('playlistEmpty');
+const playlistCount = document.getElementById('playlistCount');
+const clearPlaylistBtn = document.getElementById('clearPlaylistBtn');
 const debugToggleBtn = document.getElementById('debugToggleBtn');
 const shortcutBtn = document.getElementById('shortcutBtn');
 const shortcutPopover = document.getElementById('shortcutPopover');
@@ -79,6 +83,10 @@ let waveformPeaks = [];
 let sourcePeaks = [];
 let currentFile = null;
 let currentJobId = 0;
+let playlistItems = [];
+let activePlaylistId = null;
+let nextPlaylistId = 1;
+const playlistMediaQuery = window.matchMedia('(min-width: 960px)');
 let lastDrawnProgress = -1;
 let ffmpeg = null;
 let ffmpegLoadPromise = null;
@@ -216,6 +224,7 @@ function setStatus(text) {
 function updatePlaybackRate(rate) {
   const clamped = Math.max(0.1, Math.min(2.0, Math.round(rate * 10) / 10));
   playbackRate = clamped;
+  video.defaultPlaybackRate = clamped;
   video.playbackRate = clamped;
   speedSlider.value = String(Math.round(clamped * 10));
   speedLabel.textContent = `${clamped.toFixed(1)}×`;
@@ -1371,6 +1380,12 @@ function setBusyUi(busy) {
   setBBtn.disabled = busy || !currentFile;
   clearLoopBtn.disabled = busy || (!loopState.enabledA && !loopState.enabledB);
   zoomSlider.disabled = busy;
+  if (playlistList) {
+    playlistList.querySelectorAll('button').forEach((button) => {
+      button.disabled = busy;
+    });
+  }
+  if (clearPlaylistBtn) clearPlaylistBtn.disabled = busy || playlistItems.length === 0;
 }
 
 function updateProcessingUi() {
@@ -2142,9 +2157,157 @@ async function buildWaveformFromFile(file, jobId) {
   pushPipelineDebug('buildWaveformFromFile:done');
 }
 
+function isDesktopPlaylistEnabled() {
+  return playlistMediaQuery.matches;
+}
+
+function formatPlaylistFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function getPlaylistStateLabel(item) {
+  if (item.id === activePlaylistId && item.state === 'current') return 'Current';
+  if (item.state === 'loading') return 'Loading';
+  if (item.state === 'loaded') return 'Loaded';
+  if (item.state === 'error') return 'Error';
+  return 'Waiting';
+}
+
+function renderPlaylist() {
+  if (!playlistList || !playlistEmpty || !playlistCount || !clearPlaylistBtn) return;
+  playlistList.replaceChildren();
+  playlistCount.textContent = `${playlistItems.length} ${playlistItems.length === 1 ? 'item' : 'items'}`;
+  playlistEmpty.hidden = playlistItems.length > 0;
+  clearPlaylistBtn.disabled = processingState.active || playlistItems.length === 0;
+
+  for (const item of playlistItems) {
+    const row = document.createElement('div');
+    row.className = 'playlist-item';
+    row.setAttribute('role', 'listitem');
+    row.classList.toggle('is-active', item.id === activePlaylistId);
+
+    const selectButton = document.createElement('button');
+    selectButton.className = 'playlist-select';
+    selectButton.type = 'button';
+    selectButton.dataset.playlistId = String(item.id);
+    selectButton.disabled = processingState.active;
+    selectButton.setAttribute('aria-current', item.id === activePlaylistId ? 'true' : 'false');
+    selectButton.title = item.file.name;
+
+    const name = document.createElement('span');
+    name.className = 'playlist-name';
+    name.textContent = item.file.name;
+
+    const meta = document.createElement('span');
+    meta.className = 'playlist-meta';
+    meta.textContent = `${getPlaylistStateLabel(item)} · ${formatPlaylistFileSize(item.file.size)}`;
+
+    selectButton.append(name, meta);
+
+    const removeButton = document.createElement('button');
+    removeButton.className = 'playlist-remove';
+    removeButton.type = 'button';
+    removeButton.dataset.removePlaylistId = String(item.id);
+    removeButton.disabled = processingState.active;
+    removeButton.setAttribute('aria-label', `Remove ${item.file.name}`);
+    removeButton.title = 'Remove';
+    removeButton.textContent = '×';
+
+    row.append(selectButton, removeButton);
+    playlistList.append(row);
+  }
+}
+
+function syncPlaylistFileInput() {
+  if (isDesktopPlaylistEnabled()) {
+    videoFileInput.setAttribute('multiple', '');
+  } else {
+    videoFileInput.removeAttribute('multiple');
+  }
+}
+
+async function activatePlaylistItem(id) {
+  if (!isDesktopPlaylistEnabled() || processingState.active) return;
+  const item = playlistItems.find((entry) => entry.id === id);
+  if (!item || (activePlaylistId === id && item.state === 'current')) return;
+
+  const previous = playlistItems.find((entry) => entry.id === activePlaylistId);
+  if (previous) {
+    previous.playbackTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    if (previous.state === 'current') previous.state = 'loaded';
+  }
+
+  activePlaylistId = id;
+  item.state = 'loading';
+  renderPlaylist();
+  const loaded = await loadFile(item.file);
+  if (activePlaylistId !== id) return;
+
+  item.state = loaded ? 'current' : 'error';
+  if (loaded && item.playbackTime > 0) {
+    const duration = video.duration || decodedAudioBuffer?.duration || 0;
+    video.currentTime = Math.min(item.playbackTime, Math.max(0, duration - 0.01));
+    updateTimeline(true);
+  }
+  renderPlaylist();
+}
+
+function addFilesToPlaylist(files) {
+  const additions = Array.from(files || []).filter((file) => file instanceof File);
+  if (!additions.length) return;
+
+  const addedItems = additions.map((file) => ({
+    id: nextPlaylistId++,
+    file,
+    state: 'waiting',
+    playbackTime: 0,
+  }));
+  playlistItems.push(...addedItems);
+  renderPlaylist();
+
+  if (activePlaylistId == null) {
+    activatePlaylistItem(addedItems[0].id);
+  }
+}
+
+async function removePlaylistItem(id) {
+  if (processingState.active) return;
+  const index = playlistItems.findIndex((item) => item.id === id);
+  if (index < 0) return;
+
+  const wasActive = activePlaylistId === id;
+  playlistItems.splice(index, 1);
+  if (!wasActive) {
+    renderPlaylist();
+    return;
+  }
+
+  activePlaylistId = null;
+  clearCurrentFile();
+  renderPlaylist();
+  const nextItem = playlistItems[Math.min(index, playlistItems.length - 1)];
+  if (nextItem) await activatePlaylistItem(nextItem.id);
+}
+
+function clearPlaylist() {
+  if (processingState.active) return;
+  playlistItems = [];
+  activePlaylistId = null;
+  clearCurrentFile();
+  renderPlaylist();
+}
+
 async function loadFile(file) {
   if (!file) return;
 
+  stopTranscribeNotesPlayback({ keepStatus: true });
+  stopShortAudioLoop();
+  stopPlaybackAnimation();
+  video.pause();
   resetPipelineDebug();
   pushPipelineDebug('loadFile:start', `file=${file.name} type=${file.type || 'unknown'} size=${file.size}`);
   const jobId = ++currentJobId;
@@ -2163,7 +2326,7 @@ async function loadFile(file) {
         4,
       );
       mediaFile = await remuxTransportStreamWithFFmpeg(file, jobId);
-      if (jobId !== currentJobId) return;
+      if (jobId !== currentJobId) return false;
       currentFile = mediaFile;
       syncMediaMode(mediaFile);
     }
@@ -2187,15 +2350,17 @@ async function loadFile(file) {
     pushPipelineDebug('loadFile:before-buildWaveformFromFile');
     await buildWaveformFromFile(mediaFile, jobId);
     pushPipelineDebug('loadFile:after-buildWaveformFromFile');
+    return true;
   } catch (error) {
     console.error(error);
     pushPipelineDebug('loadFile:error', error?.message || String(error));
-    if (jobId !== currentJobId) return;
+    if (jobId !== currentJobId) return false;
     sourcePeaks = generatePlaceholderPeaks(1200);
     waveformPeaks = [];
     drawWaveform();
     setStatus(`Real audio extraction failed. Fallback waveform shown: ${error.message || 'unknown error'}`);
     finishProcessing(false, error.message || 'Real audio extraction failed');
+    return false;
   }
 }
 
@@ -2411,6 +2576,28 @@ function handleSeekByRatio(ratio) {
     const playheadCssX = clamped * canvasCssWidth;
     scrollWaveViewportToPlayhead(playheadCssX, 0.18);
   }
+}
+
+function seekPlayheadBySeconds(deltaSeconds) {
+  const duration = video.duration || decodedAudioBuffer?.duration || 0;
+  if (!currentFile || !Number.isFinite(duration) || duration <= 0) return;
+
+  const currentTime = Math.max(0, Math.min(duration, video.currentTime || 0));
+  const targetTime = Math.max(0, Math.min(duration, currentTime + deltaSeconds));
+  video.currentTime = targetTime;
+  updateTimeline(true);
+
+  const ratio = duration > 0 ? targetTime / duration : 0;
+  lastDrawnProgress = -1;
+  drawWaveform(ratio);
+  if (zoomLevel > 1) {
+    const canvasCssWidth = parseFloat(waveCanvas.style.width || '0') || 0;
+    scrollWaveViewportToPlayhead(ratio * canvasCssWidth, 0.18);
+  }
+
+  const direction = deltaSeconds < 0 ? 'Back' : 'Forward';
+  setStatus(`${direction} 1s · ${formatTime(targetTime)}`);
+  pushPipelineDebug('playback:keyboard-seek', `delta=${deltaSeconds} from=${currentTime.toFixed(3)} to=${targetTime.toFixed(3)} paused=${video.paused}`);
 }
 
 function getViewportPointerRatio(event) {
@@ -3174,20 +3361,46 @@ openFileBtn.addEventListener('click', () => {
 });
 
 videoFileInput.addEventListener('change', (event) => {
-  const [file] = event.target.files || [];
-  if (file) loadFile(file);
+  const files = Array.from(event.target.files || []);
+  if (isDesktopPlaylistEnabled()) {
+    addFilesToPlaylist(files);
+  } else {
+    playlistItems = [];
+    activePlaylistId = null;
+    renderPlaylist();
+    if (files[0]) loadFile(files[0]);
+  }
   event.target.value = '';
 });
 
 function handleClearAction() {
   pipelineDebugLines = [];
   updateDebugPanel();
-  clearCurrentFile();
+  if (isDesktopPlaylistEnabled() && activePlaylistId != null) {
+    removePlaylistItem(activePlaylistId);
+  } else {
+    playlistItems = [];
+    activePlaylistId = null;
+    renderPlaylist();
+    clearCurrentFile();
+  }
 }
 
 clearBtn.addEventListener('click', handleClearAction);
 mobileClearBtn.addEventListener('click', handleClearAction);
 if (mobileAudioClearBtn) mobileAudioClearBtn.addEventListener('click', handleClearAction);
+if (clearPlaylistBtn) clearPlaylistBtn.addEventListener('click', clearPlaylist);
+if (playlistList) {
+  playlistList.addEventListener('click', (event) => {
+    const removeButton = event.target.closest('[data-remove-playlist-id]');
+    if (removeButton) {
+      removePlaylistItem(Number(removeButton.dataset.removePlaylistId));
+      return;
+    }
+    const selectButton = event.target.closest('[data-playlist-id]');
+    if (selectButton) activatePlaylistItem(Number(selectButton.dataset.playlistId));
+  });
+}
 if (debugToggleBtn) debugToggleBtn.addEventListener('click', toggleDebugUi);
 stopBtn.addEventListener('click', stopToStart);
 playPauseBtn.addEventListener('click', togglePlayPause);
@@ -3594,10 +3807,23 @@ window.addEventListener('keydown', (event) => {
   const isTypingTarget = target instanceof HTMLElement && (
     target.tagName === 'INPUT' ||
     target.tagName === 'TEXTAREA' ||
+    target.tagName === 'SELECT' ||
     target.isContentEditable
   );
 
   if (isTypingTarget) return;
+
+  if (
+    isDesktopPlaylistEnabled()
+    && !event.metaKey
+    && !event.ctrlKey
+    && !event.altKey
+    && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
+  ) {
+    event.preventDefault();
+    seekPlayheadBySeconds(event.key === 'ArrowLeft' ? -1 : 1);
+    return;
+  }
 
   if (event.key === 'r') {
     event.preventDefault();
@@ -3720,8 +3946,15 @@ window.addEventListener('keydown', (event) => {
 
 dropZone.addEventListener('drop', (event) => {
   if (processingState.active) return;
-  const [file] = event.dataTransfer?.files || [];
-  if (file) loadFile(file);
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (isDesktopPlaylistEnabled()) {
+    addFilesToPlaylist(files);
+  } else if (files[0]) {
+    playlistItems = [];
+    activePlaylistId = null;
+    renderPlaylist();
+    loadFile(files[0]);
+  }
 });
 
 dropZone.addEventListener('click', (event) => {
@@ -3849,7 +4082,10 @@ if (transcribeCanvas) {
   }, { passive: false });
 }
 window.addEventListener('beforeunload', stopPlaybackAnimation);
+playlistMediaQuery.addEventListener('change', syncPlaylistFileInput);
 
+syncPlaylistFileInput();
+renderPlaylist();
 updateProcessingUi();
 updateLoopButtons();
 updatePlaybackRate(1);
