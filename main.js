@@ -1853,7 +1853,7 @@ async function extractAudioWithFFmpeg(file, jobId) {
     });
 
     pushPipelineDebug('extractAudioWithFFmpeg:exec:start');
-    await worker.exec([
+    const exitCode = await worker.exec([
       '-i', inputName,
       '-vn',
       '-ac', '1',
@@ -1861,7 +1861,10 @@ async function extractAudioWithFFmpeg(file, jobId) {
       '-sample_fmt', 's16',
       outputName,
     ]);
-    pushPipelineDebug('extractAudioWithFFmpeg:exec:done');
+    pushPipelineDebug('extractAudioWithFFmpeg:exec:done', `exitCode=${exitCode}`);
+    if (exitCode !== 0) {
+      throw new Error(`FFmpeg audio extraction failed (exit code ${exitCode})`);
+    }
 
     if (jobId !== currentJobId) throw new Error('File changed. Previous task cancelled');
 
@@ -1919,19 +1922,77 @@ async function remuxTransportStreamWithFFmpeg(file, jobId) {
       percent: 20,
       hint: 'If the original codecs are browser-compatible, this should be much faster than transcoding.',
     });
-    await worker.exec([
-      '-i', inputName,
-      '-map', '0',
-      '-c', 'copy',
-      '-movflags', 'faststart',
-      outputName,
-    ]);
+    const attempts = [
+      {
+        name: 'stream-copy',
+        args: [
+          '-i', inputName,
+          '-map', '0:v:0?',
+          '-map', '0:a:0?',
+          '-sn',
+          '-dn',
+          '-c', 'copy',
+          '-movflags', '+faststart',
+          outputName,
+        ],
+      },
+      {
+        name: 'aac-audio',
+        args: [
+          '-i', inputName,
+          '-map', '0:v:0?',
+          '-map', '0:a:0?',
+          '-sn',
+          '-dn',
+          '-c:v', 'copy',
+          '-c:a', 'aac',
+          '-b:a', '192k',
+          '-movflags', '+faststart',
+          outputName,
+        ],
+      },
+    ];
+
+    let outputData = null;
+    const failedAttempts = [];
+    for (const attempt of attempts) {
+      await Promise.allSettled([worker.deleteFile(outputName)]);
+      pushPipelineDebug('remuxTransportStreamWithFFmpeg:exec:start', attempt.name);
+      const exitCode = await worker.exec(attempt.args);
+      pushPipelineDebug('remuxTransportStreamWithFFmpeg:exec:done', `${attempt.name} exitCode=${exitCode}`);
+      if (exitCode !== 0) {
+        failedAttempts.push(`${attempt.name}: exit code ${exitCode}`);
+        continue;
+      }
+
+      try {
+        const candidate = await worker.readFile(outputName);
+        const candidateBytes = candidate instanceof Uint8Array
+          ? candidate
+          : new Uint8Array(candidate.buffer || candidate);
+        if (candidateBytes.byteLength > 0) {
+          outputData = candidateBytes;
+          break;
+        }
+        failedAttempts.push(`${attempt.name}: empty output`);
+      } catch (error) {
+        failedAttempts.push(`${attempt.name}: output unavailable`);
+      }
+    }
+
+    if (!outputData) {
+      throw new Error(`Unable to remux TS for browser playback (${failedAttempts.join('; ')})`);
+    }
 
     if (jobId !== currentJobId) throw new Error('File changed. Previous task cancelled');
 
-    const data = await worker.readFile(outputName);
-    const uint8 = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data);
-    const buffer = uint8.buffer.slice(uint8.byteOffset, uint8.byteOffset + uint8.byteLength);
+    const buffer = outputData.buffer.slice(
+      outputData.byteOffset,
+      outputData.byteOffset + outputData.byteLength,
+    );
+    if (buffer.byteLength === 0) {
+      throw new Error('FFmpeg produced an empty MP4 while remuxing TS');
+    }
     const baseName = file.name.replace(/\.(ts|mts|m2ts)$/i, '') || 'video';
     pushPipelineDebug('remuxTransportStreamWithFFmpeg:done', `bytes=${buffer.byteLength}`);
     return new File([buffer], `${baseName}.mp4`, { type: 'video/mp4' });
@@ -1982,7 +2043,6 @@ function normalizePeaks(peaks) {
 }
 
 async function buildWaveformFromFile(file, jobId) {
-  resetPipelineDebug();
   pushPipelineDebug('buildWaveformFromFile:start', `file=${file.name} type=${file.type || 'unknown'} size=${file.size}`);
   pushPipelineDebug('buildWaveformFromFile:before-startProcessing');
   startProcessing(
@@ -2085,6 +2145,7 @@ async function buildWaveformFromFile(file, jobId) {
 async function loadFile(file) {
   if (!file) return;
 
+  resetPipelineDebug();
   pushPipelineDebug('loadFile:start', `file=${file.name} type=${file.type || 'unknown'} size=${file.size}`);
   const jobId = ++currentJobId;
   let mediaFile = file;
