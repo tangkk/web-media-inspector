@@ -1335,6 +1335,11 @@ function syncMediaMode(file) {
   viewerCard.classList.toggle('audio-mode', isAudio);
 }
 
+function isTransportStreamFile(file) {
+  if (!file) return false;
+  return Boolean(/\.(ts|mts|m2ts)$/i.test(file.name));
+}
+
 function isLoopActive() {
   return loopState.enabledA && loopState.enabledB && loopState.end > loopState.start;
 }
@@ -1880,6 +1885,64 @@ async function extractAudioWithFFmpeg(file, jobId) {
   }
 }
 
+async function remuxTransportStreamWithFFmpeg(file, jobId) {
+  pushPipelineDebug('remuxTransportStreamWithFFmpeg:start', `file=${file.name} size=${file.size}`);
+  const worker = await ensureFFmpegLoaded();
+  if (jobId !== currentJobId) throw new Error('File changed. Previous task cancelled');
+
+  const inputExt = (file.name.split('.').pop() || 'ts').toLowerCase().replace(/[^a-z0-9]/g, '') || 'ts';
+  const inputName = `input.${inputExt}`;
+  const outputName = 'playable.mp4';
+
+  try {
+    updateProcessing({
+      stage: 'Preparing TS video',
+      detail: 'Reading the transport stream into FFmpeg working memory...',
+      percent: 8,
+      hint: 'The file stays local. This step remuxes TS into browser-playable MP4 when possible.',
+    });
+
+    const inputData = await fetchFile(file);
+    if (jobId !== currentJobId) throw new Error('File changed. Previous task cancelled');
+
+    updateProcessing({
+      stage: 'Preparing TS video',
+      detail: 'Copying the stream into FFmpeg...',
+      percent: 14,
+      hint: 'For H.264/AAC streams this usually copies data without re-encoding.',
+    });
+    await worker.writeFile(inputName, inputData);
+
+    updateProcessing({
+      stage: 'Remuxing TS video',
+      detail: 'Converting the container from TS to MP4...',
+      percent: 20,
+      hint: 'If the original codecs are browser-compatible, this should be much faster than transcoding.',
+    });
+    await worker.exec([
+      '-i', inputName,
+      '-map', '0',
+      '-c', 'copy',
+      '-movflags', 'faststart',
+      outputName,
+    ]);
+
+    if (jobId !== currentJobId) throw new Error('File changed. Previous task cancelled');
+
+    const data = await worker.readFile(outputName);
+    const uint8 = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data);
+    const buffer = uint8.buffer.slice(uint8.byteOffset, uint8.byteOffset + uint8.byteLength);
+    const baseName = file.name.replace(/\.(ts|mts|m2ts)$/i, '') || 'video';
+    pushPipelineDebug('remuxTransportStreamWithFFmpeg:done', `bytes=${buffer.byteLength}`);
+    return new File([buffer], `${baseName}.mp4`, { type: 'video/mp4' });
+  } finally {
+    await Promise.allSettled([
+      worker.deleteFile(inputName),
+      worker.deleteFile(outputName),
+    ]);
+  }
+}
+
 function isAudioOnlyFile(file) {
   if (!file) return false;
   return Boolean(file.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(file.name));
@@ -1888,7 +1951,7 @@ function isAudioOnlyFile(file) {
 function shouldTryNativeDecode(file) {
   if (!file) return false;
   if (isAudioOnlyFile(file)) return true;
-  return Boolean(file.type.startsWith('video/') || /\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name));
+  return Boolean(file.type.startsWith('video/') || /\.(mp4|mov|m4v|webm|mkv|ts|mts|m2ts)$/i.test(file.name));
 }
 
 function computePeaksFromChannelData(channelData) {
@@ -2024,30 +2087,44 @@ async function loadFile(file) {
 
   pushPipelineDebug('loadFile:start', `file=${file.name} type=${file.type || 'unknown'} size=${file.size}`);
   const jobId = ++currentJobId;
+  let mediaFile = file;
   currentFile = file;
   syncMediaMode(file);
   clearLoop();
   setStatus('Loading file…');
 
-  if (objectUrl) {
-    URL.revokeObjectURL(objectUrl);
-  }
-  objectUrl = URL.createObjectURL(file);
-  video.src = objectUrl;
-  video.classList.add('ready');
-  emptyState.hidden = true;
-
-  pushPipelineDebug('loadFile:before-resetCanvas');
-  resetCanvas();
-  pushPipelineDebug('loadFile:after-resetCanvas');
-  seekBar.value = 0;
-  currentTimeTextEl.textContent = '00:00';
-  remainingTimeTextEl.textContent = '-00:00';
-  lastTimelineTextSecond = -1;
-
   try {
+    if (isTransportStreamFile(file)) {
+      startProcessing(
+        'Preparing TS video',
+        'Converting the TS container for browser playback...',
+        'Everything runs locally in your browser. No file is uploaded.',
+        4,
+      );
+      mediaFile = await remuxTransportStreamWithFFmpeg(file, jobId);
+      if (jobId !== currentJobId) return;
+      currentFile = mediaFile;
+      syncMediaMode(mediaFile);
+    }
+
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+    }
+    objectUrl = URL.createObjectURL(mediaFile);
+    video.src = objectUrl;
+    video.classList.add('ready');
+    emptyState.hidden = true;
+
+    pushPipelineDebug('loadFile:before-resetCanvas');
+    resetCanvas();
+    pushPipelineDebug('loadFile:after-resetCanvas');
+    seekBar.value = 0;
+    currentTimeTextEl.textContent = '00:00';
+    remainingTimeTextEl.textContent = '-00:00';
+    lastTimelineTextSecond = -1;
+
     pushPipelineDebug('loadFile:before-buildWaveformFromFile');
-    await buildWaveformFromFile(file, jobId);
+    await buildWaveformFromFile(mediaFile, jobId);
     pushPipelineDebug('loadFile:after-buildWaveformFromFile');
   } catch (error) {
     console.error(error);
