@@ -22,6 +22,7 @@ const currentTimeTextEl = document.getElementById('currentTimeText');
 const remainingTimeTextEl = document.getElementById('remainingTimeText');
 const openFileBtn = document.getElementById('openFileBtn');
 const clearBtn = document.getElementById('clearBtn');
+const playlistPanel = document.getElementById('playlistPanel');
 const playlistList = document.getElementById('playlistList');
 const playlistEmpty = document.getElementById('playlistEmpty');
 const playlistCount = document.getElementById('playlistCount');
@@ -86,6 +87,7 @@ let currentJobId = 0;
 let playlistItems = [];
 let activePlaylistId = null;
 let nextPlaylistId = 1;
+let playlistDragDepth = 0;
 const playlistMediaQuery = window.matchMedia('(min-width: 960px)');
 let lastDrawnProgress = -1;
 let ffmpeg = null;
@@ -3399,6 +3401,42 @@ if (playlistList) {
     }
     const selectButton = event.target.closest('[data-playlist-id]');
     if (selectButton) activatePlaylistItem(Number(selectButton.dataset.playlistId));
+  });
+}
+if (playlistPanel) {
+  playlistPanel.addEventListener('dragenter', (event) => {
+    if (!isDesktopPlaylistEnabled()) return;
+    event.preventDefault();
+    if (processingState.active) return;
+    playlistDragDepth += 1;
+    playlistPanel.classList.add('is-dragover');
+  });
+
+  playlistPanel.addEventListener('dragover', (event) => {
+    if (!isDesktopPlaylistEnabled()) return;
+    event.preventDefault();
+    if (processingState.active) {
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+      return;
+    }
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    playlistPanel.classList.add('is-dragover');
+  });
+
+  playlistPanel.addEventListener('dragleave', (event) => {
+    if (!isDesktopPlaylistEnabled()) return;
+    event.preventDefault();
+    playlistDragDepth = Math.max(0, playlistDragDepth - 1);
+    if (playlistDragDepth === 0) playlistPanel.classList.remove('is-dragover');
+  });
+
+  playlistPanel.addEventListener('drop', (event) => {
+    if (!isDesktopPlaylistEnabled()) return;
+    event.preventDefault();
+    playlistDragDepth = 0;
+    playlistPanel.classList.remove('is-dragover');
+    if (processingState.active) return;
+    addFilesToPlaylist(event.dataTransfer?.files || []);
   });
 }
 if (debugToggleBtn) debugToggleBtn.addEventListener('click', toggleDebugUi);
