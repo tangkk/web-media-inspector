@@ -1492,6 +1492,30 @@ function getWaveformHandleHit(event, { allowNearest = false } = {}) {
   return hit;
 }
 
+function updateLoopHandleTime(handle, targetTime) {
+  if (!video.duration || !Number.isFinite(video.duration)) return;
+  const minGap = 0.05;
+  if (handle === 'A') {
+    const maxTime = loopState.enabledB
+      ? Math.max(0, loopState.end - minGap)
+      : video.duration;
+    loopState.start = Math.max(0, Math.min(targetTime, maxTime));
+  } else if (handle === 'B') {
+    const minTime = loopState.enabledA
+      ? Math.min(video.duration, loopState.start + minGap)
+      : 0;
+    loopState.end = Math.min(video.duration, Math.max(targetTime, minTime));
+  }
+}
+
+function describeLoopHandleAdjustment(handle) {
+  if (loopState.enabledA && loopState.enabledB) {
+    return `Adjusting ${handle}: ${formatTime(loopState.start)} → ${formatTime(loopState.end)}`;
+  }
+  const time = handle === 'A' ? loopState.start : loopState.end;
+  return `Adjusting ${handle}: ${formatTime(time)}`;
+}
+
 function syncWaveViewportTouchAction() {
   if (waveformCursorDrag.active || waveformHandleDrag.active || waveformHandleDrag.pendingHandle) {
     waveViewport.style.touchAction = 'none';
@@ -3059,11 +3083,7 @@ function startWaveformPointerGesture(event) {
           clientY: waveformPointerGesture.lastY,
         });
         const activeTime = activeRatio * video.duration;
-        if (waveformHandleDrag.handle === 'A') {
-          loopState.start = Math.max(0, Math.min(activeTime, loopState.end - 0.05));
-        } else if (waveformHandleDrag.handle === 'B') {
-          loopState.end = Math.min(video.duration, Math.max(activeTime, loopState.start + 0.05));
-        }
+        updateLoopHandleTime(waveformHandleDrag.handle, activeTime);
         updateLoopButtons();
         drawWaveform(video.duration ? video.currentTime / video.duration : 0);
         pushPipelineDebug('waveform:v2:handle:start', `pointer=${event.pointerType} handle=${waveformHandleDrag.handle} at=${activeTime.toFixed(3)}`);
@@ -3072,7 +3092,7 @@ function startWaveformPointerGesture(event) {
           clientX: waveformPointerGesture.lastX,
           clientY: waveformPointerGesture.lastY,
         });
-        setStatus(`Adjusting ${waveformHandleDrag.handle}: ${formatTime(loopState.start)} → ${formatTime(loopState.end)}`);
+        setStatus(describeLoopHandleAdjustment(waveformHandleDrag.handle));
         return;
       }
     }
@@ -3134,7 +3154,7 @@ function finishWaveformHandleDrag(event) {
   updateLoopButtons();
   drawWaveform(video.duration ? video.currentTime / video.duration : 0);
   updateViewportCursorVisibility(event);
-  setStatus(`A-B loop: ${formatTime(loopState.start)} → ${formatTime(loopState.end)}`);
+  setStatus(describeLoopState());
   return true;
 }
 
@@ -3656,6 +3676,27 @@ waveViewport.addEventListener('pointerdown', (event) => {
     return;
   }
 
+  const handle = getWaveformHandleHit(event);
+  if (handle) {
+    clearWaveformLongPressTimer();
+    waveformPointerGesture = null;
+    waveformRangeSelect.active = false;
+    waveformHandleDrag.active = true;
+    waveformHandleDrag.handle = handle;
+    waveformHandleDrag.pendingHandle = null;
+    isWaveViewportPanning = false;
+    syncWaveViewportTouchAction();
+    try {
+      waveViewport.setPointerCapture(event.pointerId);
+    } catch (error) {
+      pushPipelineDebug('waveform:v2:pointercapture:set:error', error?.message || String(error));
+    }
+    pushPipelineDebug('waveform:v2:handle:start-immediate', `pointer=${event.pointerType} handle=${handle}`);
+    updateViewportCursorVisibility(event);
+    setStatus(describeLoopHandleAdjustment(handle));
+    return;
+  }
+
   if (isNearWaveformCursor(event, event.pointerType === 'touch' ? 20 : 12)) {
     waveformHandleDrag.pendingHandle = null;
     syncWaveViewportTouchAction();
@@ -3682,32 +3723,6 @@ waveViewport.addEventListener('pointerdown', (event) => {
     });
     armCursorHoldScrub();
     setStatus(`Scrubbing: ${formatTime(targetTime)}`);
-    return;
-  }
-
-  let handle = null;
-  if (event.pointerType === 'mouse') {
-    handle = getWaveformHandleHit(event);
-  } else {
-    handle = getWaveformHandleHit(event);
-  }
-  if (handle) {
-    clearWaveformLongPressTimer();
-    waveformPointerGesture = null;
-    waveformRangeSelect.active = false;
-    waveformHandleDrag.active = true;
-    waveformHandleDrag.handle = handle;
-    waveformHandleDrag.pendingHandle = null;
-    isWaveViewportPanning = false;
-    syncWaveViewportTouchAction();
-    try {
-      waveViewport.setPointerCapture(event.pointerId);
-    } catch (error) {
-      pushPipelineDebug('waveform:v2:pointercapture:set:error', error?.message || String(error));
-    }
-    pushPipelineDebug('waveform:v2:handle:start-immediate', `pointer=${event.pointerType} handle=${handle}`);
-    updateViewportCursorVisibility(event);
-    setStatus(`Adjusting ${handle}: ${formatTime(loopState.start)} → ${formatTime(loopState.end)}`);
     return;
   }
 
@@ -3746,16 +3761,11 @@ waveViewport.addEventListener('pointermove', (event) => {
     isWaveViewportPanning = false;
     autoScrollWaveViewportWhileDragging(event.clientX);
     const ratio = getViewportPointerRatio(event);
-    const minGap = 0.05;
-    if (waveformHandleDrag.handle === 'A') {
-      loopState.start = Math.max(0, Math.min(ratio * video.duration, loopState.end - minGap));
-    } else if (waveformHandleDrag.handle === 'B') {
-      loopState.end = Math.min(video.duration, Math.max(ratio * video.duration, loopState.start + minGap));
-    }
+    updateLoopHandleTime(waveformHandleDrag.handle, ratio * video.duration);
     pushPipelineDebug('waveform:v2:handle:update', `pointer=${event.pointerType} handle=${waveformHandleDrag.handle} start=${loopState.start.toFixed(3)} end=${loopState.end.toFixed(3)}`);
     updateLoopButtons();
     drawWaveform(video.duration ? video.currentTime / video.duration : 0);
-    setStatus(`Adjusting ${waveformHandleDrag.handle}: ${formatTime(loopState.start)} → ${formatTime(loopState.end)}`);
+    setStatus(describeLoopHandleAdjustment(waveformHandleDrag.handle));
   }
 });
 
