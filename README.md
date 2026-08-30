@@ -1,13 +1,13 @@
-# web-video-trans
+# Web Media Inspector
 
 A lightweight, local-first, open-source tool for listening, looping, inspecting, and transcribing music from video or audio — directly in the browser.
 
-**Live demo:** https://tangkk.github.io/web-video-trans/  
-**GitHub:** https://github.com/tangkk/web-video-trans
+**Live demo:** https://tangkk.github.io/web-media-inspector/
+**GitHub:** https://github.com/tangkk/web-media-inspector
 
 > Slow it down. Loop it. EQ it. See it. Transcribe it.
 
-web-video-trans is built for people who learn music by ear, transcribe performances, inspect phrases closely, and want a fast browser tool instead of a heavy DAW workflow.
+Web Media Inspector is built for people who learn music by ear, transcribe performances, inspect phrases closely, and want a fast browser tool instead of a heavy DAW workflow.
 
 Because it is **open source**, you can use it freely, inspect how it works, modify it for your own workflow, and host your own version if you want.
 
@@ -23,7 +23,7 @@ The hard part is:
 - navigating precisely to attacks and note boundaries
 - seeing pitch motion clearly enough to confirm what you think you heard
 
-web-video-trans is designed to make that process feel quick and direct.
+Web Media Inspector is designed to make that process feel quick and direct.
 
 ---
 
@@ -106,7 +106,7 @@ That combination makes it much easier to confirm:
 
 ## What makes it different
 
-web-video-trans is intentionally simple:
+Web Media Inspector is intentionally simple:
 
 - **local-first** — your files stay in your browser
 - **fast to open** — no account, no upload pipeline
@@ -158,16 +158,16 @@ npm run dev -- --host 0.0.0.0
 Then open:
 
 ```text
-http://<your-mac-lan-ip>:5173/web-video-trans/
+http://<your-mac-lan-ip>:5173/web-media-inspector/
 ```
 
 ---
 
 ## Open source
 
-web-video-trans is open source.
+Web Media Inspector is open source.
 
-- Live demo: https://tangkk.github.io/web-video-trans/
-- Source code: https://github.com/tangkk/web-video-trans
+- Live demo: https://tangkk.github.io/web-media-inspector/
+- Source code: https://github.com/tangkk/web-media-inspector
 
 If this tool is useful to you, feel free to fork it, adapt it, and build your own transcription workflow on top of it.

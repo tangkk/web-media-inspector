@@ -1,8 +1,8 @@
 {
-  "name": "web-video-trans",
-  "short_name": "web-video-trans",
+  "name": "Web Media Inspector",
+  "short_name": "Media Inspector",
   "description": "Local-first browser tool for video/audio inspection and music transcription.",
-  "start_url": "/web-video-trans/",
+  "start_url": "/web-media-inspector/",
   "display": "standalone",
   "background_color": "#f6f6f3",
   "theme_color": "#0f1115",
