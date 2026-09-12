@@ -4145,3 +4145,9 @@ setTranscribeState('idle', 'Set an A-B loop first.', '', 0);
 syncDebugUi();
 drawWaveform();
 drawTranscriptionRoll();
+
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  navigator.serviceWorker
+    .register(`${import.meta.env.BASE_URL}sw.js`)
+    .catch((error) => pushPipelineDebug('sw:register:failed', String(error)));
+}
