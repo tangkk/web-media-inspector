@@ -342,11 +342,24 @@ async function restoreLastSession() {
       return;
     }
     isRestoringSession = true;
+    const restoredPlaylistItem = {
+      id: nextPlaylistId++,
+      file,
+      state: 'loading',
+      playbackTime: Number(saved.playhead) || 0,
+    };
+    playlistItems = [restoredPlaylistItem];
+    activePlaylistId = restoredPlaylistItem.id;
+    renderPlaylist();
     const loaded = await loadFile(file);
     if (!loaded) {
+      restoredPlaylistItem.state = 'error';
+      renderPlaylist();
       setStatus(`Media not found or could not be loaded: ${saved.media.name}. A-B loop and playhead were not restored.`);
       return;
     }
+    restoredPlaylistItem.state = 'current';
+    renderPlaylist();
     applyRestoredSession(saved);
     setStatus(`Session restored: ${saved.media.name}`);
   } catch (error) {
