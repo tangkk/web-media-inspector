@@ -219,14 +219,27 @@ let sessionSaveTimer = null;
 let isRestoringSession = false;
 
 function getSessionSnapshot() {
-  if (!currentFile || !video.src) return null;
+  const activeItem = playlistItems.find((item) => item.id === activePlaylistId) || null;
+  const mediaFile = currentFile || activeItem?.file;
+  if (!mediaFile) return null;
   return {
     version: 1,
-    media: { name: currentFile.name, type: currentFile.type, size: currentFile.size, lastModified: currentFile.lastModified },
+    media: { name: mediaFile.name, type: mediaFile.type, size: mediaFile.size, lastModified: mediaFile.lastModified },
     playhead: Number.isFinite(video.currentTime) ? video.currentTime : 0,
     loop: { ...loopState },
     speed: playbackRate,
     zoom: zoomLevel,
+    playlist: playlistItems.map((item) => ({
+      id: item.id,
+      name: item.file.name,
+      type: item.file.type,
+      size: item.file.size,
+      lastModified: item.file.lastModified,
+      playbackTime: item.id === activePlaylistId && Number.isFinite(video.currentTime)
+        ? video.currentTime
+        : (Number(item.playbackTime) || 0),
+    })),
+    activePlaylistId,
     savedAt: Date.now(),
   };
 }
@@ -257,11 +270,11 @@ function openSessionDb() {
   });
 }
 
-async function putSessionMedia(file) {
+async function putSessionMedia(file, key = SESSION_MEDIA_KEY) {
   const db = await openSessionDb();
   try {
     await new Promise((resolve, reject) => {
-      const request = db.transaction(SESSION_DB_STORE, 'readwrite').objectStore(SESSION_DB_STORE).put(file, SESSION_MEDIA_KEY);
+      const request = db.transaction(SESSION_DB_STORE, 'readwrite').objectStore(SESSION_DB_STORE).put(file, key);
       request.onsuccess = resolve;
       request.onerror = () => reject(request.error || new Error('Could not cache media'));
     });
@@ -270,11 +283,11 @@ async function putSessionMedia(file) {
   }
 }
 
-async function getSessionMedia() {
+async function getSessionMedia(key = SESSION_MEDIA_KEY) {
   const db = await openSessionDb();
   try {
     return await new Promise((resolve, reject) => {
-      const request = db.transaction(SESSION_DB_STORE, 'readonly').objectStore(SESSION_DB_STORE).get(SESSION_MEDIA_KEY);
+      const request = db.transaction(SESSION_DB_STORE, 'readonly').objectStore(SESSION_DB_STORE).get(key);
       request.onsuccess = () => resolve(request.result || null);
       request.onerror = () => reject(request.error || new Error('Could not read cached media'));
     });
@@ -291,6 +304,20 @@ async function cacheCurrentMediaForSession(file) {
     // Preserve the metadata so Restore can give a useful, explicit result.
     saveSessionState();
     console.warn('Could not cache media for session restore:', error);
+  }
+}
+
+function getPlaylistMediaCacheKey(id) {
+  return `playlist-media:${id}`;
+}
+
+async function cachePlaylistMedia(item) {
+  try {
+    await putSessionMedia(item.file, getPlaylistMediaCacheKey(item.id));
+    saveSessionState();
+  } catch (error) {
+    saveSessionState();
+    console.warn('Could not cache playlist media for session restore:', error);
   }
 }
 
@@ -335,30 +362,50 @@ async function restoreLastSession() {
   restoreSessionBtn.disabled = true;
   setStatus(`Restoring ${saved.media.name}…`);
   try {
-    const file = await getSessionMedia();
-    const matches = file && file.name === saved.media.name && file.size === saved.media.size && file.lastModified === saved.media.lastModified;
-    if (!matches) {
+    const savedPlaylist = Array.isArray(saved.playlist) && saved.playlist.length
+      ? saved.playlist
+      : [{ id: 1, ...saved.media, playbackTime: saved.playhead }];
+    const savedActiveId = saved.activePlaylistId ?? savedPlaylist[0].id;
+    const restoredEntries = await Promise.all(savedPlaylist.map(async (entry) => {
+      const file = await getSessionMedia(getPlaylistMediaCacheKey(entry.id));
+      const matches = file && file.name === entry.name && file.size === entry.size && file.lastModified === entry.lastModified;
+      return { entry, file: matches ? file : null };
+    }));
+    // Sessions created before playlist caching only have the legacy current-media key.
+    if (!saved.playlist?.length) {
+      const legacyFile = await getSessionMedia();
+      const legacy = restoredEntries[0];
+      if (legacyFile && legacyFile.name === legacy.entry.name && legacyFile.size === legacy.entry.size && legacyFile.lastModified === legacy.entry.lastModified) {
+        legacy.file = legacyFile;
+      }
+    }
+    const activeEntry = restoredEntries.find(({ entry }) => entry.id === savedActiveId);
+    if (!activeEntry?.file) {
       setStatus(`Media not found: ${saved.media.name}. A-B loop and playhead were not restored.`);
       return;
     }
     isRestoringSession = true;
-    const restoredPlaylistItem = {
-      id: nextPlaylistId++,
-      file,
-      state: 'loading',
-      playbackTime: Number(saved.playhead) || 0,
-    };
-    playlistItems = [restoredPlaylistItem];
-    activePlaylistId = restoredPlaylistItem.id;
+    playlistItems = restoredEntries
+      .filter(({ file }) => file)
+      .map(({ entry, file }) => ({
+        id: entry.id,
+        file,
+        state: entry.id === savedActiveId ? 'loading' : 'waiting',
+        playbackTime: Number(entry.playbackTime) || 0,
+      }));
+    nextPlaylistId = Math.max(nextPlaylistId, ...playlistItems.map((item) => item.id + 1));
+    activePlaylistId = savedActiveId;
     renderPlaylist();
-    const loaded = await loadFile(file);
+    const loaded = await loadFile(activeEntry.file);
     if (!loaded) {
-      restoredPlaylistItem.state = 'error';
+      const item = playlistItems.find((entry) => entry.id === savedActiveId);
+      if (item) item.state = 'error';
       renderPlaylist();
       setStatus(`Media not found or could not be loaded: ${saved.media.name}. A-B loop and playhead were not restored.`);
       return;
     }
-    restoredPlaylistItem.state = 'current';
+    const item = playlistItems.find((entry) => entry.id === savedActiveId);
+    if (item) item.state = 'current';
     renderPlaylist();
     applyRestoredSession(saved);
     setStatus(`Session restored: ${saved.media.name}`);
@@ -2439,6 +2486,7 @@ async function activatePlaylistItem(id) {
   activePlaylistId = id;
   item.state = 'loading';
   renderPlaylist();
+  scheduleSessionSave();
   const loaded = await loadFile(item.file);
   if (activePlaylistId !== id) return;
 
@@ -2449,6 +2497,7 @@ async function activatePlaylistItem(id) {
     updateTimeline(true);
   }
   renderPlaylist();
+  scheduleSessionSave();
 }
 
 function addFilesToPlaylist(files) {
@@ -2463,6 +2512,8 @@ function addFilesToPlaylist(files) {
   }));
   playlistItems.push(...addedItems);
   renderPlaylist();
+  addedItems.forEach((item) => cachePlaylistMedia(item));
+  scheduleSessionSave();
 
   if (activePlaylistId == null) {
     activatePlaylistItem(addedItems[0].id);
@@ -2478,12 +2529,14 @@ async function removePlaylistItem(id) {
   playlistItems.splice(index, 1);
   if (!wasActive) {
     renderPlaylist();
+    scheduleSessionSave();
     return;
   }
 
   activePlaylistId = null;
   clearCurrentFile();
   renderPlaylist();
+  scheduleSessionSave();
   const nextItem = playlistItems[Math.min(index, playlistItems.length - 1)];
   if (nextItem) await activatePlaylistItem(nextItem.id);
 }
@@ -2494,6 +2547,7 @@ function clearPlaylist() {
   activePlaylistId = null;
   clearCurrentFile();
   renderPlaylist();
+  scheduleSessionSave();
 }
 
 async function loadFile(file) {
