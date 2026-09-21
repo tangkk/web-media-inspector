@@ -21,6 +21,7 @@ const playPauseIcon = document.getElementById('playPauseIcon');
 const currentTimeTextEl = document.getElementById('currentTimeText');
 const remainingTimeTextEl = document.getElementById('remainingTimeText');
 const openFileBtn = document.getElementById('openFileBtn');
+const restoreSessionBtn = document.getElementById('restoreSessionBtn');
 const clearBtn = document.getElementById('clearBtn');
 const playlistPanel = document.getElementById('playlistPanel');
 const playlistList = document.getElementById('playlistList');
@@ -207,6 +208,157 @@ let scrubSeekState = {
   frameRequestPending: false,
 };
 
+// Files selected through an <input> cannot be reopened from a path after a
+// browser restart. Keep one local browser-cache copy in IndexedDB instead;
+// localStorage only holds the small, serializable playback state.
+const SESSION_STORAGE_KEY = 'web-media-inspector:last-session:v1';
+const SESSION_DB_NAME = 'web-media-inspector-session';
+const SESSION_DB_STORE = 'media';
+const SESSION_MEDIA_KEY = 'last-media';
+let sessionSaveTimer = null;
+let isRestoringSession = false;
+
+function getSessionSnapshot() {
+  if (!currentFile || !video.src) return null;
+  return {
+    version: 1,
+    media: { name: currentFile.name, type: currentFile.type, size: currentFile.size, lastModified: currentFile.lastModified },
+    playhead: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+    loop: { ...loopState },
+    speed: playbackRate,
+    zoom: zoomLevel,
+    savedAt: Date.now(),
+  };
+}
+
+function saveSessionState() {
+  if (isRestoringSession) return;
+  const snapshot = getSessionSnapshot();
+  if (!snapshot) return;
+  try {
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch (error) {
+    console.warn('Could not save session state:', error);
+  }
+}
+
+function scheduleSessionSave() {
+  if (isRestoringSession) return;
+  window.clearTimeout(sessionSaveTimer);
+  sessionSaveTimer = window.setTimeout(saveSessionState, 400);
+}
+
+function openSessionDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(SESSION_DB_NAME, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(SESSION_DB_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Could not open session cache'));
+  });
+}
+
+async function putSessionMedia(file) {
+  const db = await openSessionDb();
+  try {
+    await new Promise((resolve, reject) => {
+      const request = db.transaction(SESSION_DB_STORE, 'readwrite').objectStore(SESSION_DB_STORE).put(file, SESSION_MEDIA_KEY);
+      request.onsuccess = resolve;
+      request.onerror = () => reject(request.error || new Error('Could not cache media'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function getSessionMedia() {
+  const db = await openSessionDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db.transaction(SESSION_DB_STORE, 'readonly').objectStore(SESSION_DB_STORE).get(SESSION_MEDIA_KEY);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error('Could not read cached media'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function cacheCurrentMediaForSession(file) {
+  try {
+    await putSessionMedia(file);
+    saveSessionState();
+  } catch (error) {
+    // Preserve the metadata so Restore can give a useful, explicit result.
+    saveSessionState();
+    console.warn('Could not cache media for session restore:', error);
+  }
+}
+
+function getSavedSession() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || 'null');
+    return saved?.version === 1 && saved.media ? saved : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function applyRestoredSession(saved) {
+  updatePlaybackRate(saved.speed);
+  zoomLevel = Math.max(1, Math.min(24, Number(saved.zoom) || 1));
+  zoomSlider.value = String(zoomLevel);
+  updateZoomLabel();
+
+  const duration = video.duration || decodedAudioBuffer?.duration || 0;
+  const loop = saved.loop || {};
+  loopState.enabledA = Boolean(loop.enabledA) && Number.isFinite(loop.start) && loop.start >= 0 && loop.start < duration;
+  loopState.enabledB = Boolean(loop.enabledB) && Number.isFinite(loop.end) && loop.end >= 0 && loop.end <= duration;
+  loopState.start = loopState.enabledA ? loop.start : 0;
+  loopState.end = loopState.enabledB ? loop.end : 0;
+  if (loopState.enabledA && loopState.enabledB && loopState.end <= loopState.start) clearLoop();
+  updateLoopButtons();
+
+  const playhead = Math.max(0, Math.min(Number(saved.playhead) || 0, Math.max(0, duration - 0.01)));
+  video.currentTime = playhead;
+  lastDrawnProgress = -1;
+  drawWaveform(duration ? playhead / duration : 0);
+  updateTimeline(true);
+}
+
+async function restoreLastSession() {
+  if (processingState.active) return;
+  const saved = getSavedSession();
+  if (!saved) {
+    setStatus('No saved session found');
+    return;
+  }
+  restoreSessionBtn.disabled = true;
+  setStatus(`Restoring ${saved.media.name}…`);
+  try {
+    const file = await getSessionMedia();
+    const matches = file && file.name === saved.media.name && file.size === saved.media.size && file.lastModified === saved.media.lastModified;
+    if (!matches) {
+      setStatus(`Media not found: ${saved.media.name}. A-B loop and playhead were not restored.`);
+      return;
+    }
+    isRestoringSession = true;
+    const loaded = await loadFile(file);
+    if (!loaded) {
+      setStatus(`Media not found or could not be loaded: ${saved.media.name}. A-B loop and playhead were not restored.`);
+      return;
+    }
+    applyRestoredSession(saved);
+    setStatus(`Session restored: ${saved.media.name}`);
+  } catch (error) {
+    console.warn('Session restore failed:', error);
+    setStatus(`Media not found: ${saved.media.name}. A-B loop and playhead were not restored.`);
+  } finally {
+    isRestoringSession = false;
+    restoreSessionBtn.disabled = false;
+    saveSessionState();
+  }
+}
+
 function formatTime(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
   const totalSeconds = Math.floor(seconds);
@@ -230,6 +382,7 @@ function updatePlaybackRate(rate) {
   video.playbackRate = clamped;
   speedSlider.value = String(Math.round(clamped * 10));
   speedLabel.textContent = `${clamped.toFixed(1)}×`;
+  scheduleSessionSave();
 }
 
 function updateZoomLabel() {
@@ -1368,6 +1521,7 @@ function updateLoopButtons() {
   setBBtn.classList.toggle('is-active', loopState.enabledB);
   clearLoopBtn.disabled = !loopState.enabledA && !loopState.enabledB;
   updateTranscribeUi();
+  scheduleSessionSave();
 }
 
 function setBusyUi(busy) {
@@ -1382,6 +1536,7 @@ function setBusyUi(busy) {
   setBBtn.disabled = busy || !currentFile;
   clearLoopBtn.disabled = busy || (!loopState.enabledA && !loopState.enabledB);
   zoomSlider.disabled = busy;
+  if (restoreSessionBtn) restoreSessionBtn.disabled = busy || isRestoringSession;
   if (playlistList) {
     playlistList.querySelectorAll('button').forEach((button) => {
       button.disabled = busy;
@@ -1439,6 +1594,7 @@ function clearLoop() {
   resetTranscribeResult();
   setTranscribeState('idle', 'Set an A-B loop first.', '', 0);
   updateLoopButtons();
+  scheduleSessionSave();
 }
 
 function describeLoopState() {
@@ -2376,6 +2532,8 @@ async function loadFile(file) {
     pushPipelineDebug('loadFile:before-buildWaveformFromFile');
     await buildWaveformFromFile(mediaFile, jobId);
     pushPipelineDebug('loadFile:after-buildWaveformFromFile');
+    if (!isRestoringSession) cacheCurrentMediaForSession(mediaFile);
+    else saveSessionState();
     return true;
   } catch (error) {
     console.error(error);
@@ -3382,6 +3540,8 @@ openFileBtn.addEventListener('click', () => {
   triggerOpenFilePicker({ warmupAudio: true });
 });
 
+if (restoreSessionBtn) restoreSessionBtn.addEventListener('click', restoreLastSession);
+
 videoFileInput.addEventListener('change', (event) => {
   const files = Array.from(event.target.files || []);
   if (isDesktopPlaylistEnabled()) {
@@ -3558,6 +3718,7 @@ zoomSlider.addEventListener('input', () => {
     const canvasCssWidth = parseFloat(waveCanvas.style.width || '0') || 0;
     scrollWaveViewportToPlayhead(progress * canvasCssWidth, 0.18);
   }
+  scheduleSessionSave();
 });
 
 speedSlider.addEventListener('input', () => {
@@ -3632,6 +3793,7 @@ video.addEventListener('loadedmetadata', () => {
 video.addEventListener('timeupdate', () => {
   enforceLoopPlayback();
   updateTimeline(false);
+  scheduleSessionSave();
 });
 video.addEventListener('seeking', () => {
   if (!scrubSeekState.active) return;
@@ -4129,7 +4291,10 @@ if (transcribeCanvas) {
     drawTranscriptionRoll();
   }, { passive: false });
 }
-window.addEventListener('beforeunload', stopPlaybackAnimation);
+window.addEventListener('beforeunload', () => {
+  saveSessionState();
+  stopPlaybackAnimation();
+});
 playlistMediaQuery.addEventListener('change', syncPlaylistFileInput);
 
 syncPlaylistFileInput();

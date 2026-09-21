@@ -227,6 +227,7 @@ body.debug-ui-enabled {
 }
 
 .toolbar-clear-btn,
+.toolbar-restore-btn,
 .shortcut-icon-btn {
   width: 30px;
   height: 30px;
@@ -1115,6 +1116,12 @@ video.ready {
 
   .wave-toolbar-left .toolbar-file-btn {
     display: none !important;
+  }
+
+  .wave-toolbar-left .restore-session-btn {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
   }
 
   .wave-toolbar-left .toolbar-clear-btn {
