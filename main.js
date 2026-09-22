@@ -217,6 +217,25 @@ const SESSION_DB_STORE = 'media';
 const SESSION_MEDIA_KEY = 'last-media';
 let sessionSaveTimer = null;
 let isRestoringSession = false;
+const sessionCachedMediaKeys = new Set();
+let sessionStoragePersistenceRequested = false;
+
+function isSessionMediaReady() {
+  if (playlistItems.length) {
+    return playlistItems.every((item) => sessionCachedMediaKeys.has(getPlaylistMediaCacheKey(item.id)));
+  }
+  return sessionCachedMediaKeys.has(SESSION_MEDIA_KEY);
+}
+
+async function requestPersistentSessionStorage() {
+  if (sessionStoragePersistenceRequested || !navigator.storage?.persist) return;
+  sessionStoragePersistenceRequested = true;
+  try {
+    await navigator.storage.persist();
+  } catch (error) {
+    console.warn('Could not request persistent browser storage:', error);
+  }
+}
 
 function getSessionSnapshot() {
   const activeItem = playlistItems.find((item) => item.id === activePlaylistId) || null;
@@ -247,7 +266,12 @@ function getSessionSnapshot() {
 function saveSessionState() {
   if (isRestoringSession) return;
   const snapshot = getSessionSnapshot();
-  if (!snapshot) return;
+  if (!snapshot) {
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    return;
+  }
+  // Never point a session at media that has not finished writing to IndexedDB.
+  if (!isSessionMediaReady()) return;
   try {
     localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(snapshot));
   } catch (error) {
@@ -299,10 +323,10 @@ async function getSessionMedia(key = SESSION_MEDIA_KEY) {
 async function cacheCurrentMediaForSession(file) {
   try {
     await putSessionMedia(file);
+    sessionCachedMediaKeys.add(SESSION_MEDIA_KEY);
+    requestPersistentSessionStorage();
     saveSessionState();
   } catch (error) {
-    // Preserve the metadata so Restore can give a useful, explicit result.
-    saveSessionState();
     console.warn('Could not cache media for session restore:', error);
   }
 }
@@ -314,9 +338,10 @@ function getPlaylistMediaCacheKey(id) {
 async function cachePlaylistMedia(item) {
   try {
     await putSessionMedia(item.file, getPlaylistMediaCacheKey(item.id));
+    sessionCachedMediaKeys.add(getPlaylistMediaCacheKey(item.id));
+    requestPersistentSessionStorage();
     saveSessionState();
   } catch (error) {
-    saveSessionState();
     console.warn('Could not cache playlist media for session restore:', error);
   }
 }
@@ -377,6 +402,8 @@ async function restoreLastSession() {
       const legacy = restoredEntries[0];
       if (legacyFile && legacyFile.name === legacy.entry.name && legacyFile.size === legacy.entry.size && legacyFile.lastModified === legacy.entry.lastModified) {
         legacy.file = legacyFile;
+        // Migrate the old one-file cache into the playlist-keyed format.
+        await putSessionMedia(legacyFile, getPlaylistMediaCacheKey(legacy.entry.id));
       }
     }
     const activeEntry = restoredEntries.find(({ entry }) => entry.id === savedActiveId);
@@ -385,6 +412,9 @@ async function restoreLastSession() {
       return;
     }
     isRestoringSession = true;
+    restoredEntries
+      .filter(({ file }) => file)
+      .forEach(({ entry }) => sessionCachedMediaKeys.add(getPlaylistMediaCacheKey(entry.id)));
     playlistItems = restoredEntries
       .filter(({ file }) => file)
       .map(({ entry, file }) => ({
