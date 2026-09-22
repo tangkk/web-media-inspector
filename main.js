@@ -266,10 +266,9 @@ function getSessionSnapshot() {
 function saveSessionState() {
   if (isRestoringSession) return;
   const snapshot = getSessionSnapshot();
-  if (!snapshot) {
-    localStorage.removeItem(SESSION_STORAGE_KEY);
-    return;
-  }
+  // On a fresh page load there is intentionally no in-memory media yet.
+  // That must not erase the session the Restore button is about to use.
+  if (!snapshot) return;
   // Never point a session at media that has not finished writing to IndexedDB.
   if (!isSessionMediaReady()) return;
   try {
