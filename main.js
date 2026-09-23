@@ -61,6 +61,11 @@ const transcribeInputModeSelect = document.getElementById('transcribeInputMode')
 const transcribeViewModeSelect = document.getElementById('transcribeViewMode');
 const transcribeScrollBar = document.getElementById('transcribeScrollBar');
 const transcribeHoverLabel = document.getElementById('transcribeHoverLabel');
+const recordBtn = document.getElementById('recordBtn');
+const recordStatusEl = document.getElementById('recordStatus');
+const recordHintEl = document.getElementById('recordHint');
+const recordTimerEl = document.getElementById('recordTimer');
+const recordIndicatorEl = document.getElementById('recordIndicator');
 
 const ctx = waveCanvas.getContext('2d');
 const eqGraphCtx = eqGraphCanvas.getContext('2d');
@@ -206,6 +211,18 @@ let scrubSeekState = {
   lastAppliedTime: -1,
   waitingForSeeked: false,
   frameRequestPending: false,
+};
+
+let systemRecording = {
+  active: false,
+  id: null,
+  startedAt: 0,
+  stream: null,
+  analyser: null,
+  data: null,
+  rafId: null,
+  statusTimer: null,
+  lastFileSize: 0,
 };
 
 // Files selected through an <input> cannot be reopened from a path after a
@@ -463,6 +480,163 @@ function formatTime(seconds) {
 function setStatus(text) {
   statusTextEl.textContent = text;
 }
+
+function formatRecordTime(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function drawLiveRecordingWaveform({ schedule = true } = {}) {
+  if (!systemRecording.active || !systemRecording.analyser) return;
+  resizeCanvasForDisplay();
+  const width = waveCanvas.width;
+  const height = waveCanvas.height;
+  const mid = height / 2;
+  const data = systemRecording.data;
+  systemRecording.analyser.getByteTimeDomainData(data);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = '#fffdf8';
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = 'rgba(185, 28, 28, .08)';
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = 'rgba(185, 28, 28, .22)';
+  ctx.beginPath();
+  ctx.moveTo(0, mid);
+  ctx.lineTo(width, mid);
+  ctx.stroke();
+  ctx.strokeStyle = '#b91c1c';
+  ctx.lineWidth = Math.max(1.5, (window.devicePixelRatio || 1) * 1.5);
+  ctx.beginPath();
+  for (let x = 0; x < width; x += 1) {
+    const index = Math.floor((x / width) * data.length);
+    const y = mid + ((data[index] - 128) / 128) * height * .42;
+    if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.fillStyle = '#991b1b';
+  ctx.font = `${Math.max(11, Math.round(height * .08))}px sans-serif`;
+  ctx.fillText('LIVE SYSTEM AUDIO', 14, 24);
+  const elapsed = (Date.now() - systemRecording.startedAt) / 1000;
+  recordTimerEl.textContent = formatRecordTime(elapsed);
+  if (schedule) systemRecording.rafId = requestAnimationFrame(() => drawLiveRecordingWaveform());
+}
+
+function stopLiveRecordingWaveform() {
+  if (systemRecording.rafId !== null) cancelAnimationFrame(systemRecording.rafId);
+  systemRecording.rafId = null;
+  if (systemRecording.stream) systemRecording.stream.getTracks().forEach((track) => track.stop());
+  systemRecording.stream = null;
+  systemRecording.analyser = null;
+  systemRecording.data = null;
+  if (systemRecording.statusTimer !== null) clearInterval(systemRecording.statusTimer);
+  systemRecording.statusTimer = null;
+}
+
+async function refreshRecordingStatus() {
+  if (!systemRecording.active) return;
+  try {
+    const response = await fetch('/api/record/status', { cache: 'no-store' });
+    const status = await response.json();
+    if (!systemRecording.active) return;
+    const elapsed = Math.max(0, Math.floor((Date.now() - systemRecording.startedAt) / 1000));
+    const fileProgress = status.fileSize > systemRecording.lastFileSize;
+    systemRecording.lastFileSize = status.fileSize || systemRecording.lastFileSize;
+    recordTimerEl.textContent = formatRecordTime(elapsed);
+    if (status.processAlive && (fileProgress || elapsed < 3)) {
+      recordIndicatorEl.className = 'record-indicator is-live';
+      recordHintEl.textContent = `sysaudio-rec is running · ${Math.round(status.fileSize / 1024)} KB written · live waveform active`;
+    } else if (status.processAlive) {
+      recordIndicatorEl.className = 'record-indicator is-warning';
+      recordHintEl.textContent = 'sysaudio-rec is running, but the output file has not grown yet. Check that system audio is playing.';
+    } else {
+      recordIndicatorEl.className = 'record-indicator is-warning';
+      recordHintEl.textContent = 'The recorder process stopped unexpectedly. Stop and retry.';
+    }
+  } catch (error) {
+    recordIndicatorEl.className = 'record-indicator is-warning';
+    recordHintEl.textContent = 'Cannot confirm recorder status; the local recording service may have stopped.';
+  }
+}
+
+async function startSystemRecording() {
+  if (systemRecording.active || processingState.active) return;
+  recordBtn.disabled = true;
+  recordStatusEl.textContent = 'Requesting system audio…';
+  recordHintEl.textContent = 'Choose a screen/window and enable Share audio when macOS asks.';
+  try {
+    if (!navigator.mediaDevices?.getDisplayMedia) throw new Error('This browser does not support system audio capture. Use Chrome or Safari on macOS.');
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error('No shared audio track was provided. Enable “Share audio” and try again.');
+    }
+    const context = await ensureAudioContext();
+    if (context.state === 'suspended') await context.resume();
+    const source = context.createMediaStreamSource(new MediaStream(audioTracks));
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+    const response = await fetch('/api/record/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not start sysaudio-rec.');
+    systemRecording = { active: true, id: result.id, startedAt: Date.now(), stream, analyser, data: new Uint8Array(analyser.fftSize), rafId: null, statusTimer: null, lastFileSize: 0 };
+    recordBtn.disabled = false;
+    recordBtn.classList.add('is-recording');
+    recordBtn.textContent = '■ Stop recording';
+    recordIndicatorEl.className = 'record-indicator is-live';
+    recordStatusEl.textContent = 'Recording system audio';
+    recordHintEl.textContent = 'The waveform is live. Stop when you have the take you want.';
+    setStatus('Recording system audio…');
+    drawLiveRecordingWaveform();
+    await refreshRecordingStatus();
+    systemRecording.statusTimer = setInterval(refreshRecordingStatus, 1000);
+  } catch (error) {
+    recordBtn.disabled = false;
+    recordStatusEl.textContent = 'Ready to record';
+    recordHintEl.textContent = error.message || 'Could not start system audio capture.';
+    setStatus(error.message || 'Could not start recording.');
+  }
+}
+
+async function stopSystemRecording() {
+  if (!systemRecording.active) return;
+  const recordingId = systemRecording.id;
+  recordBtn.disabled = true;
+  recordStatusEl.textContent = 'Finishing MP3…';
+  recordHintEl.textContent = 'sysaudio-rec is finalizing the recording.';
+  systemRecording.active = false;
+  stopLiveRecordingWaveform();
+  try {
+    const response = await fetch('/api/record/stop', { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not stop sysaudio-rec.');
+    const fileResponse = await fetch(`/api/record/file?id=${encodeURIComponent(recordingId)}`);
+    if (!fileResponse.ok) throw new Error('The recording file could not be read.');
+    const blob = await fileResponse.blob();
+    const file = new File([blob], `system-recording-${new Date().toISOString().replace(/[:.]/g, '-')}.mp3`, { type: 'audio/mpeg' });
+    recordBtn.classList.remove('is-recording');
+    recordBtn.textContent = '● Record';
+    recordBtn.disabled = false;
+    recordStatusEl.textContent = 'Recording ready';
+    recordIndicatorEl.className = 'record-indicator';
+    recordHintEl.textContent = 'The finished MP3 has been loaded into the inspector.';
+    await loadFile(file);
+    setStatus('System recording loaded.');
+  } catch (error) {
+    recordBtn.classList.remove('is-recording');
+    recordBtn.textContent = '● Record';
+    recordBtn.disabled = false;
+    recordStatusEl.textContent = 'Recording could not be finalized';
+    recordIndicatorEl.className = 'record-indicator is-warning';
+    recordHintEl.textContent = error.message || 'Unknown recording error.';
+    setStatus(error.message || 'Could not finalize recording.');
+  }
+}
+
+if (recordBtn) recordBtn.addEventListener('click', () => {
+  if (systemRecording.active) stopSystemRecording(); else startSystemRecording();
+});
 
 function updatePlaybackRate(rate) {
   const clamped = Math.max(0.1, Math.min(2.0, Math.round(rate * 10) / 10));
@@ -1862,6 +2036,10 @@ function getDisplayPeaks(targetCount) {
 }
 
 function drawWaveform(progress = video.duration ? video.currentTime / video.duration : 0) {
+  if (systemRecording.active) {
+    drawLiveRecordingWaveform({ schedule: false });
+    return;
+  }
   progress = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0;
   waveViewport.style.setProperty('--cursor-x', `${lastPlayheadCssX}px`);
   waveViewport.style.setProperty('--scroll-left', `${waveViewport.scrollLeft}px`);
