@@ -59,7 +59,7 @@ async function startRecording(req, res) {
   const body = await readBody(req);
   const id = randomUUID();
   const outputPath = join(recordingDir, `system-recording-${id}.mp3`);
-  const args = ['--meter', outputPath];
+  const args = ['--no-gui', '--meter', outputPath];
   if (body.device) args.unshift('--device', String(body.device));
   recordLog('starting', { id, binary: recordBinary, args, outputPath });
 
