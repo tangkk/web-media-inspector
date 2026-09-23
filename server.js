@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { mkdir, stat } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -10,7 +10,8 @@ const cliPortIndex = process.argv.indexOf('--port');
 const port = Number(process.env.PORT || (cliPortIndex >= 0 ? process.argv[cliPortIndex + 1] : 5173));
 const hostIndex = process.argv.indexOf('--host');
 const host = hostIndex >= 0 ? process.argv[hostIndex + 1] : (process.env.HOST || '0.0.0.0');
-const recordBinary = process.env.SYS_RECORD_BIN || '/Users/tangkk/sysaudio-rec';
+const projectRecorder = '/Users/tangkk/Projects/sysaudio-rec/.build/release/sysaudio-rec';
+const recordBinary = process.env.SYS_RECORD_BIN || (existsSync(projectRecorder) ? projectRecorder : '/Users/tangkk/sysaudio-rec');
 const recordingDir = join('/tmp', 'web-media-inspector-recordings');
 let activeRecording = null;
 
@@ -40,18 +41,35 @@ async function startRecording(req, res) {
   const body = await readBody(req);
   const id = randomUUID();
   const outputPath = join(recordingDir, `system-recording-${id}.mp3`);
-  const args = [outputPath];
+  const args = ['--meter', outputPath];
   if (body.device) args.unshift('--device', String(body.device));
 
   const child = spawn(recordBinary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const logs = [];
-  const captureLog = (chunk) => {
-    logs.push(String(chunk).trim());
-    if (logs.length > 30) logs.shift();
+  const meter = { level: 0, samples: [] };
+  let stdoutBuffer = '';
+  const handleLine = (line) => {
+    line = line.trim();
+    if (!line) return;
+      const meterMatch = /^METER\s+([\d.]+)$/.exec(line);
+      if (meterMatch) {
+        meter.level = Math.max(0, Math.min(1, Number(meterMatch[1])));
+        meter.samples.push(meter.level);
+        if (meter.samples.length > 160) meter.samples.shift();
+        return;
+      }
+      logs.push(line);
+      if (logs.length > 30) logs.shift();
   };
-  child.stdout.on('data', captureLog);
-  child.stderr.on('data', captureLog);
-  activeRecording = { id, child, outputPath, status: 'recording', startedAt: Date.now(), logs };
+  const captureStdout = (chunk) => {
+    stdoutBuffer += String(chunk);
+    const lines = stdoutBuffer.split(/\r?\n/);
+    stdoutBuffer = lines.pop() || '';
+    lines.forEach(handleLine);
+  };
+  child.stdout.on('data', captureStdout);
+  child.stderr.on('data', (chunk) => String(chunk).split(/\r?\n/).forEach(handleLine));
+  activeRecording = { id, child, outputPath, status: 'recording', startedAt: Date.now(), logs, meter };
   child.on('error', (error) => {
     activeRecording.status = 'error';
     activeRecording.error = error.message;
@@ -99,6 +117,7 @@ async function recordingStatus(res) {
     elapsedMs: Date.now() - activeRecording.startedAt,
     processAlive: !activeRecording.child.killed && activeRecording.child.exitCode == null,
     fileSize,
+    meter: activeRecording.meter,
     logs: activeRecording.logs,
   });
 }

@@ -217,12 +217,10 @@ let systemRecording = {
   active: false,
   id: null,
   startedAt: 0,
-  stream: null,
-  analyser: null,
-  data: null,
   rafId: null,
   statusTimer: null,
   lastFileSize: 0,
+  meterSamples: [],
 };
 
 // Files selected through an <input> cannot be reopened from a path after a
@@ -487,13 +485,12 @@ function formatRecordTime(seconds) {
 }
 
 function drawLiveRecordingWaveform({ schedule = true } = {}) {
-  if (!systemRecording.active || !systemRecording.analyser) return;
+  if (!systemRecording.active) return;
   resizeCanvasForDisplay();
   const width = waveCanvas.width;
   const height = waveCanvas.height;
   const mid = height / 2;
-  const data = systemRecording.data;
-  systemRecording.analyser.getByteTimeDomainData(data);
+  const samples = systemRecording.meterSamples.length ? systemRecording.meterSamples : [0];
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = '#fffdf8';
   ctx.fillRect(0, 0, width, height);
@@ -504,15 +501,14 @@ function drawLiveRecordingWaveform({ schedule = true } = {}) {
   ctx.moveTo(0, mid);
   ctx.lineTo(width, mid);
   ctx.stroke();
-  ctx.strokeStyle = '#b91c1c';
-  ctx.lineWidth = Math.max(1.5, (window.devicePixelRatio || 1) * 1.5);
-  ctx.beginPath();
-  for (let x = 0; x < width; x += 1) {
-    const index = Math.floor((x / width) * data.length);
-    const y = mid + ((data[index] - 128) / 128) * height * .42;
-    if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
+  const barWidth = Math.max(2, width / samples.length - 1);
+  samples.forEach((value, index) => {
+    const amplitude = Math.max(0.02, Math.min(1, value * 5));
+    const barHeight = amplitude * height * .78;
+    const x = index * (barWidth + 1);
+    ctx.fillStyle = '#b91c1c';
+    ctx.fillRect(x, mid - barHeight / 2, barWidth, barHeight);
+  });
   ctx.fillStyle = '#991b1b';
   ctx.font = `${Math.max(11, Math.round(height * .08))}px sans-serif`;
   ctx.fillText('LIVE SYSTEM AUDIO', 14, 24);
@@ -524,10 +520,6 @@ function drawLiveRecordingWaveform({ schedule = true } = {}) {
 function stopLiveRecordingWaveform() {
   if (systemRecording.rafId !== null) cancelAnimationFrame(systemRecording.rafId);
   systemRecording.rafId = null;
-  if (systemRecording.stream) systemRecording.stream.getTracks().forEach((track) => track.stop());
-  systemRecording.stream = null;
-  systemRecording.analyser = null;
-  systemRecording.data = null;
   if (systemRecording.statusTimer !== null) clearInterval(systemRecording.statusTimer);
   systemRecording.statusTimer = null;
 }
@@ -541,10 +533,15 @@ async function refreshRecordingStatus() {
     const elapsed = Math.max(0, Math.floor((Date.now() - systemRecording.startedAt) / 1000));
     const fileProgress = status.fileSize > systemRecording.lastFileSize;
     systemRecording.lastFileSize = status.fileSize || systemRecording.lastFileSize;
+    systemRecording.meterSamples = status.meter?.samples || [];
+    drawLiveRecordingWaveform({ schedule: false });
     recordTimerEl.textContent = formatRecordTime(elapsed);
-    if (status.processAlive && (fileProgress || elapsed < 3)) {
+    if (status.processAlive && status.meter?.samples?.length) {
       recordIndicatorEl.className = 'record-indicator is-live';
-      recordHintEl.textContent = `sysaudio-rec is running · ${Math.round(status.fileSize / 1024)} KB written · live waveform active`;
+      recordHintEl.textContent = `sysaudio-rec is capturing audio · ${Math.round(status.fileSize / 1024)} KB written · live waveform active`;
+    } else if (status.processAlive && (fileProgress || elapsed < 3)) {
+      recordIndicatorEl.className = 'record-indicator is-live';
+      recordHintEl.textContent = `sysaudio-rec is running · ${Math.round(status.fileSize / 1024)} KB written · waiting for audio meter`;
     } else if (status.processAlive) {
       recordIndicatorEl.className = 'record-indicator is-warning';
       recordHintEl.textContent = 'sysaudio-rec is running, but the output file has not grown yet. Check that system audio is playing.';
@@ -561,36 +558,23 @@ async function refreshRecordingStatus() {
 async function startSystemRecording() {
   if (systemRecording.active || processingState.active) return;
   recordBtn.disabled = true;
-  recordStatusEl.textContent = 'Requesting system audio…';
-  recordHintEl.textContent = 'Choose a screen/window and enable Share audio when macOS asks.';
+  recordStatusEl.textContent = 'Starting system recorder…';
+  recordHintEl.textContent = 'Starting sysaudio-rec locally.';
   try {
-    if (!navigator.mediaDevices?.getDisplayMedia) throw new Error('This browser does not support system audio capture. Use Chrome or Safari on macOS.');
-    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-    const audioTracks = stream.getAudioTracks();
-    if (!audioTracks.length) {
-      stream.getTracks().forEach((track) => track.stop());
-      throw new Error('No shared audio track was provided. Enable “Share audio” and try again.');
-    }
-    const context = await ensureAudioContext();
-    if (context.state === 'suspended') await context.resume();
-    const source = context.createMediaStreamSource(new MediaStream(audioTracks));
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 2048;
-    source.connect(analyser);
     const response = await fetch('/api/record/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Could not start sysaudio-rec.');
-    systemRecording = { active: true, id: result.id, startedAt: Date.now(), stream, analyser, data: new Uint8Array(analyser.fftSize), rafId: null, statusTimer: null, lastFileSize: 0 };
+    systemRecording = { active: true, id: result.id, startedAt: Date.now(), rafId: null, statusTimer: null, lastFileSize: 0, meterSamples: [] };
     recordBtn.disabled = false;
     recordBtn.classList.add('is-recording');
     recordBtn.textContent = '■ Stop recording';
     recordIndicatorEl.className = 'record-indicator is-live';
     recordStatusEl.textContent = 'Recording system audio';
-    recordHintEl.textContent = 'The waveform is live. Stop when you have the take you want.';
+    recordHintEl.textContent = 'The audio meter will appear as soon as sysaudio-rec receives sound.';
     setStatus('Recording system audio…');
     drawLiveRecordingWaveform();
     await refreshRecordingStatus();
-    systemRecording.statusTimer = setInterval(refreshRecordingStatus, 1000);
+    systemRecording.statusTimer = setInterval(refreshRecordingStatus, 100);
   } catch (error) {
     recordBtn.disabled = false;
     recordStatusEl.textContent = 'Ready to record';
