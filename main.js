@@ -66,6 +66,8 @@ const recordStatusEl = document.getElementById('recordStatus');
 const recordHintEl = document.getElementById('recordHint');
 const recordTimerEl = document.getElementById('recordTimer');
 const recordIndicatorEl = document.getElementById('recordIndicator');
+const recordSourceSelect = document.getElementById('recordSource');
+const refreshRecordSourcesBtn = document.getElementById('refreshRecordSourcesBtn');
 const recorderInstallDialog = document.getElementById('recorderInstallDialog');
 const recorderInstallCloseBtn = document.getElementById('recorderInstallCloseBtn');
 const copyRecorderInstallBtn = document.getElementById('copyRecorderInstallBtn');
@@ -228,6 +230,7 @@ let systemRecording = {
   lastFileSize: 0,
   meterSamples: [],
 };
+let recordingDevicesLoaded = false;
 
 // Files selected through an <input> cannot be reopened from a path after a
 // browser restart. Keep one local browser-cache copy in IndexedDB instead;
@@ -500,6 +503,29 @@ function recordingApi(path) {
   return `${recordingApiBase}/api/record${path}`;
 }
 
+async function loadRecordingDevices({ force = false } = {}) {
+  if (!recordSourceSelect || (recordingDevicesLoaded && !force)) return;
+  const selectedDevice = recordSourceSelect.value;
+  refreshRecordSourcesBtn.disabled = true;
+  try {
+    const response = await fetch(recordingApi('/devices'), { cache: 'no-store' });
+    const result = await readRecordingApiResponse(response);
+    if (!response.ok) throw new Error(result.error || 'Could not load input sources.');
+    recordSourceSelect.replaceChildren(new Option('Loopback / System audio (default)', ''));
+    (result.devices || []).forEach((device) => {
+      const label = `${device.name} · ${device.inputChannels} ch · ${device.sampleRate} Hz`;
+      recordSourceSelect.add(new Option(label, device.name));
+    });
+    recordSourceSelect.value = selectedDevice;
+    recordingDevicesLoaded = true;
+    console.info('[recording] input sources loaded', result.devices);
+  } catch (error) {
+    console.warn('[recording] input source discovery unavailable:', error.message);
+  } finally {
+    refreshRecordSourcesBtn.disabled = false;
+  }
+}
+
 function showRecorderInstallDialog(message = '', mode = 'service') {
   if (!recorderInstallDialog) return;
   const commands = mode === 'recorder' ? RECORDER_INSTALL_COMMANDS : LOCAL_SERVICE_COMMANDS;
@@ -609,7 +635,8 @@ async function startSystemRecording() {
   recordStatusEl.textContent = 'Starting system recorder…';
     recordHintEl.textContent = 'Starting sysaudio-rec locally.';
   try {
-    const response = await fetch(recordingApi('/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const device = recordSourceSelect?.value || '';
+    const response = await fetch(recordingApi('/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(device ? { device } : {}) });
     const result = await readRecordingApiResponse(response);
     if (!response.ok) {
       if (result.code === 'RECORDER_NOT_INSTALLED') showRecorderInstallDialog(result.error, 'recorder');
@@ -618,6 +645,8 @@ async function startSystemRecording() {
     console.info('[recording] sysaudio-rec started', result);
     systemRecording = { active: true, id: result.id, startedAt: Date.now(), rafId: null, statusTimer: null, lastFileSize: 0, meterSamples: [] };
     recordBtn.disabled = false;
+    if (recordSourceSelect) recordSourceSelect.disabled = true;
+    if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.disabled = true;
     recordBtn.classList.add('is-recording');
     recordBtn.textContent = '■ Stop recording';
     recordIndicatorEl.className = 'record-indicator is-live';
@@ -631,6 +660,8 @@ async function startSystemRecording() {
     console.error('System recording start failed:', error);
     if (!systemRecording.active) showRecorderInstallDialog(error.message || 'The local recording service could not be reached.', 'service');
     recordBtn.disabled = false;
+    if (recordSourceSelect) recordSourceSelect.disabled = false;
+    if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.disabled = false;
     recordStatusEl.textContent = 'Ready to record';
     recordHintEl.textContent = error.message || 'Could not start system audio capture.';
     setStatus(error.message || 'Could not start recording.');
@@ -658,6 +689,8 @@ async function stopSystemRecording() {
     recordBtn.classList.remove('is-recording');
     recordBtn.textContent = '● Record';
     recordBtn.disabled = false;
+    if (recordSourceSelect) recordSourceSelect.disabled = false;
+    if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.disabled = false;
     recordStatusEl.textContent = 'Recording ready';
     recordIndicatorEl.className = 'record-indicator';
     recordHintEl.textContent = 'The finished MP3 has been loaded into the inspector.';
@@ -678,6 +711,8 @@ async function stopSystemRecording() {
 if (recordBtn) recordBtn.addEventListener('click', () => {
   if (systemRecording.active) stopSystemRecording(); else startSystemRecording();
 });
+if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.addEventListener('click', () => loadRecordingDevices({ force: true }));
+if (recordSourceSelect) loadRecordingDevices();
 if (recorderInstallCloseBtn) recorderInstallCloseBtn.addEventListener('click', () => recorderInstallDialog.close());
 if (copyRecorderInstallBtn) copyRecorderInstallBtn.addEventListener('click', async () => {
   try {

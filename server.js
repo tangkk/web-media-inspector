@@ -116,6 +116,27 @@ async function startRecording(req, res) {
   return json(res, 200, { id, status: 'recording', startedAt: activeRecording.startedAt });
 }
 
+async function listRecordingDevices(res) {
+  if (!existsSync(recordBinary)) {
+    return json(res, 503, { code: 'RECORDER_NOT_INSTALLED', error: 'sysaudio-rec is not installed on this computer.' });
+  }
+  const child = spawn(recordBinary, ['--list-devices-json'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+  child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+  const exitCode = await new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('exit', (code) => resolve(code));
+  });
+  if (exitCode !== 0) return json(res, 500, { error: stderr.trim() || 'Could not list CoreAudio input devices.' });
+  try {
+    return json(res, 200, { devices: JSON.parse(stdout) });
+  } catch (error) {
+    return json(res, 500, { error: 'sysaudio-rec returned an invalid device list.' });
+  }
+}
+
 async function stopRecording(req, res) {
   if (!activeRecording) return json(res, 404, { error: 'No recording is active.' });
   const recording = activeRecording;
@@ -199,6 +220,7 @@ const server = createServer(async (req, res) => {
     try { return await stopRecording(req, res); } catch (error) { return json(res, 500, { error: error.message }); }
   }
   if (url.pathname === '/api/record/status' && req.method === 'GET') return recordingStatus(res);
+  if (url.pathname === '/api/record/devices' && req.method === 'GET') return listRecordingDevices(res);
   if (url.pathname === '/api/record/file' && req.method === 'GET') return serveRecording(req, res, url);
   if (serviceOnly) return json(res, 404, { error: 'Recording service endpoint not found.' });
   vite.middlewares(req, res, (error) => {

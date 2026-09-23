@@ -108,6 +108,13 @@
               <span id="recordHint">Connects to the local sysaudio-rec service and leaves browser playback untouched.</span>
             </div>
             <div class="record-actions">
+              <label class="record-source" for="recordSource">
+                <span>Source</span>
+                <select id="recordSource">
+                  <option value="">Loopback / System audio (default)</option>
+                </select>
+              </label>
+              <button id="refreshRecordSourcesBtn" class="icon-btn" type="button" aria-label="Refresh input sources" title="Refresh input sources">↻</button>
               <button id="recordBtn" class="record-btn" type="button">● Record</button>
               <span id="recordTimer" class="record-timer">00:00</span>
             </div>
