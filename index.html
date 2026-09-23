@@ -105,7 +105,7 @@
             <div class="record-copy">
               <span class="record-kicker">SYSTEM CAPTURE</span>
               <strong><i id="recordIndicator" class="record-indicator"></i><span id="recordStatus">Ready to record</span></strong>
-              <span id="recordHint">Uses sysaudio-rec locally and leaves browser playback untouched.</span>
+              <span id="recordHint">Connects to the local sysaudio-rec service and leaves browser playback untouched.</span>
             </div>
             <div class="record-actions">
               <button id="recordBtn" class="record-btn" type="button">● Record</button>
@@ -120,10 +120,11 @@
               </div>
               <button id="recorderInstallCloseBtn" class="icon-btn" type="button" aria-label="Close install instructions">×</button>
             </div>
-            <p>System recording needs the local <code>sysaudio-rec</code> helper. Build it once, then restart this web app.</p>
-            <pre><code>git clone https://github.com/tangkk/sysaudio-rec.git ~/Projects/sysaudio-rec
-cd ~/Projects/sysaudio-rec
-swift build -c release</code></pre>
+            <p id="recorderInstallIntro">System recording needs a local helper running on this computer.</p>
+            <pre><code id="recorderInstallCommands">git clone https://github.com/tangkk/web-media-inspector.git ~/Projects/web-media-inspector
+cd ~/Projects/web-media-inspector
+npm install
+npm run dev</code></pre>
             <div class="recorder-install-actions">
               <button id="copyRecorderInstallBtn" class="file-btn" type="button">Copy commands</button>
               <a class="file-btn" href="https://github.com/tangkk/sysaudio-rec" target="_blank" rel="noreferrer">Open GitHub</a>

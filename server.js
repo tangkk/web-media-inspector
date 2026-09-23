@@ -16,6 +16,11 @@ const installedRecorder = join(homedir(), 'sysaudio-rec');
 const recordBinary = process.env.SYS_RECORD_BIN || (existsSync(projectRecorder) ? projectRecorder : installedRecorder);
 const recordingDir = join('/tmp', 'web-media-inspector-recordings');
 let activeRecording = null;
+const allowedBrowserOrigins = new Set([
+  'https://tangkk.github.io',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]);
 
 function recordLog(event, details = {}) {
   console.log(`[recording] ${event}`, details);
@@ -166,6 +171,19 @@ async function serveRecording(req, res, url) {
 
 const vite = await createViteServer({ server: { middlewareMode: true, hmr: false, ws: false }, appType: 'spa' });
 const server = createServer(async (req, res) => {
+  const origin = req.headers.origin;
+  if (origin && allowedBrowserOrigins.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    });
+    return res.end();
+  }
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (url.pathname === '/api/record/start' && req.method === 'POST') {
     try { return await startRecording(req, res); } catch (error) { return json(res, 400, { error: error.message }); }

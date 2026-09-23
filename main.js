@@ -70,6 +70,8 @@ const recorderInstallDialog = document.getElementById('recorderInstallDialog');
 const recorderInstallCloseBtn = document.getElementById('recorderInstallCloseBtn');
 const copyRecorderInstallBtn = document.getElementById('copyRecorderInstallBtn');
 const recorderInstallError = document.getElementById('recorderInstallError');
+const recorderInstallIntro = document.getElementById('recorderInstallIntro');
+const recorderInstallCommands = document.getElementById('recorderInstallCommands');
 
 const ctx = waveCanvas.getContext('2d');
 const eqGraphCtx = eqGraphCanvas.getContext('2d');
@@ -488,10 +490,23 @@ function formatRecordTime(seconds) {
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
-const RECORDER_INSTALL_COMMANDS = 'git clone https://github.com/tangkk/sysaudio-rec.git ~/Projects/sysaudio-rec\ncd ~/Projects/sysaudio-rec\nswift build -c release';
+const LOCAL_SERVICE_COMMANDS = 'git clone https://github.com/tangkk/web-media-inspector.git ~/Projects/web-media-inspector\ncd ~/Projects/web-media-inspector\nnpm install\nnpm run dev';
+const RECORDER_INSTALL_COMMANDS = 'git clone https://github.com/tangkk/sysaudio-rec.git ~/Projects/sysaudio-rec\ncd ~/Projects/sysaudio-rec\nswift build -c release\n\ncd ~/Projects/web-media-inspector\nnpm run dev';
+const recordingApiBase = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+  ? ''
+  : 'http://127.0.0.1:5173';
 
-function showRecorderInstallDialog(message = '') {
+function recordingApi(path) {
+  return `${recordingApiBase}/api/record${path}`;
+}
+
+function showRecorderInstallDialog(message = '', mode = 'service') {
   if (!recorderInstallDialog) return;
+  const commands = mode === 'recorder' ? RECORDER_INSTALL_COMMANDS : LOCAL_SERVICE_COMMANDS;
+  recorderInstallIntro.textContent = mode === 'recorder'
+    ? 'The local recording service is running, but sysaudio-rec is not installed yet.'
+    : 'System recording needs a local helper running on this computer. Start it, then return to this page.';
+  recorderInstallCommands.textContent = commands;
   recorderInstallError.hidden = !message;
   recorderInstallError.textContent = message;
   if (!recorderInstallDialog.open) recorderInstallDialog.showModal();
@@ -540,7 +555,7 @@ function stopLiveRecordingWaveform() {
 async function refreshRecordingStatus() {
   if (!systemRecording.active) return;
   try {
-    const response = await fetch('/api/record/status', { cache: 'no-store' });
+    const response = await fetch(recordingApi('/status'), { cache: 'no-store' });
     const status = await response.json();
     if (!systemRecording.active) return;
     const elapsed = Math.max(0, Math.floor((Date.now() - systemRecording.startedAt) / 1000));
@@ -575,8 +590,8 @@ async function readRecordingApiResponse(response) {
   try {
     return JSON.parse(body);
   } catch (error) {
-    if (response.status === 404) {
-      throw new Error('Recording service is unavailable. Start this project with “npm run dev”, not “vite”.');
+    if (response.status === 404 || response.status === 405) {
+      throw new Error('Recording service is unavailable. Start the local helper with “npm run dev”, then retry.');
     }
     throw new Error(`Recording service returned HTTP ${response.status}.`);
   }
@@ -594,10 +609,10 @@ async function startSystemRecording() {
   recordStatusEl.textContent = 'Starting system recorder…';
     recordHintEl.textContent = 'Starting sysaudio-rec locally.';
   try {
-    const response = await fetch('/api/record/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const response = await fetch(recordingApi('/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     const result = await readRecordingApiResponse(response);
     if (!response.ok) {
-      if (result.code === 'RECORDER_NOT_INSTALLED') showRecorderInstallDialog(result.error);
+      if (result.code === 'RECORDER_NOT_INSTALLED') showRecorderInstallDialog(result.error, 'recorder');
       throw new Error(result.error || 'Could not start sysaudio-rec.');
     }
     console.info('[recording] sysaudio-rec started', result);
@@ -614,6 +629,7 @@ async function startSystemRecording() {
     systemRecording.statusTimer = setInterval(refreshRecordingStatus, 100);
   } catch (error) {
     console.error('System recording start failed:', error);
+    if (!systemRecording.active) showRecorderInstallDialog(error.message || 'The local recording service could not be reached.', 'service');
     recordBtn.disabled = false;
     recordStatusEl.textContent = 'Ready to record';
     recordHintEl.textContent = error.message || 'Could not start system audio capture.';
@@ -631,11 +647,11 @@ async function stopSystemRecording() {
   systemRecording.active = false;
   stopLiveRecordingWaveform();
   try {
-    const response = await fetch('/api/record/stop', { method: 'POST' });
+    const response = await fetch(recordingApi('/stop'), { method: 'POST' });
     const result = await readRecordingApiResponse(response);
     if (!response.ok) throw new Error(result.error || 'Could not stop sysaudio-rec.');
     console.info('[recording] sysaudio-rec stopped', result);
-    const fileResponse = await fetch(`/api/record/file?id=${encodeURIComponent(recordingId)}`);
+    const fileResponse = await fetch(`${recordingApi('/file')}?id=${encodeURIComponent(recordingId)}`);
     if (!fileResponse.ok) throw new Error('The recording file could not be read.');
     const blob = await fileResponse.blob();
     const file = new File([blob], `system-recording-${new Date().toISOString().replace(/[:.]/g, '-')}.mp3`, { type: 'audio/mpeg' });
@@ -665,7 +681,7 @@ if (recordBtn) recordBtn.addEventListener('click', () => {
 if (recorderInstallCloseBtn) recorderInstallCloseBtn.addEventListener('click', () => recorderInstallDialog.close());
 if (copyRecorderInstallBtn) copyRecorderInstallBtn.addEventListener('click', async () => {
   try {
-    await navigator.clipboard.writeText(RECORDER_INSTALL_COMMANDS);
+    await navigator.clipboard.writeText(recorderInstallCommands.textContent);
     copyRecorderInstallBtn.textContent = 'Copied';
     setTimeout(() => { copyRecorderInstallBtn.textContent = 'Copy commands'; }, 1500);
   } catch (error) {
