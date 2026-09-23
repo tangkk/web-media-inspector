@@ -4,16 +4,22 @@ import { createReadStream, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { createServer as createViteServer } from 'vite';
 
 const cliPortIndex = process.argv.indexOf('--port');
 const port = Number(process.env.PORT || (cliPortIndex >= 0 ? process.argv[cliPortIndex + 1] : 5173));
 const hostIndex = process.argv.indexOf('--host');
 const host = hostIndex >= 0 ? process.argv[hostIndex + 1] : (process.env.HOST || '0.0.0.0');
-const projectRecorder = '/Users/tangkk/Projects/sysaudio-rec/.build/release/sysaudio-rec';
-const recordBinary = process.env.SYS_RECORD_BIN || (existsSync(projectRecorder) ? projectRecorder : '/Users/tangkk/sysaudio-rec');
+const projectRecorder = join(homedir(), 'Projects', 'sysaudio-rec', '.build', 'release', 'sysaudio-rec');
+const installedRecorder = join(homedir(), 'sysaudio-rec');
+const recordBinary = process.env.SYS_RECORD_BIN || (existsSync(projectRecorder) ? projectRecorder : installedRecorder);
 const recordingDir = join('/tmp', 'web-media-inspector-recordings');
 let activeRecording = null;
+
+function recordLog(event, details = {}) {
+  console.log(`[recording] ${event}`, details);
+}
 
 await mkdir(recordingDir, { recursive: true });
 
@@ -37,25 +43,33 @@ async function startRecording(req, res) {
   if (activeRecording?.status === 'recording') {
     return json(res, 409, { error: 'A recording is already in progress.' });
   }
+  if (!existsSync(recordBinary)) {
+    return json(res, 503, {
+      code: 'RECORDER_NOT_INSTALLED',
+      error: 'sysaudio-rec is not installed on this computer.',
+    });
+  }
 
   const body = await readBody(req);
   const id = randomUUID();
   const outputPath = join(recordingDir, `system-recording-${id}.mp3`);
   const args = ['--meter', outputPath];
   if (body.device) args.unshift('--device', String(body.device));
+  recordLog('starting', { id, binary: recordBinary, args, outputPath });
 
   const child = spawn(recordBinary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const logs = [];
-  const meter = { level: 0, samples: [] };
+  const meter = { level: 0, peak: 0, samples: [] };
   let stdoutBuffer = '';
   const handleLine = (line) => {
     line = line.trim();
     if (!line) return;
-      const meterMatch = /^METER\s+([\d.]+)$/.exec(line);
+      const meterMatch = /^METER\s+([\d.]+)(?:\s+([\d.]+))?$/.exec(line);
       if (meterMatch) {
         meter.level = Math.max(0, Math.min(1, Number(meterMatch[1])));
-        meter.samples.push(meter.level);
-        if (meter.samples.length > 160) meter.samples.shift();
+        meter.peak = Math.max(0, Math.min(1, Number(meterMatch[2] || meterMatch[1])));
+        meter.samples.push(Math.max(meter.level, meter.peak));
+        if (meter.samples.length > 600) meter.samples.shift();
         return;
       }
       logs.push(line);
@@ -69,8 +83,19 @@ async function startRecording(req, res) {
   };
   child.stdout.on('data', captureStdout);
   child.stderr.on('data', (chunk) => String(chunk).split(/\r?\n/).forEach(handleLine));
+  try {
+    await new Promise((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+  } catch (error) {
+    recordLog('start-failed', { id, error: error.message });
+    return json(res, 500, { error: `Could not start sysaudio-rec: ${error.message}` });
+  }
   activeRecording = { id, child, outputPath, status: 'recording', startedAt: Date.now(), logs, meter };
+  recordLog('started', { id, pid: child.pid });
   child.on('error', (error) => {
+    recordLog('runtime-error', { id, error: error.message });
     activeRecording.status = 'error';
     activeRecording.error = error.message;
   });
@@ -79,6 +104,7 @@ async function startRecording(req, res) {
       activeRecording.status = activeRecording.status === 'stopping' ? 'stopped' : (code === 0 ? 'stopped' : 'error');
       activeRecording.code = code;
       activeRecording.signal = signal;
+      recordLog('exited', { id, code, signal, status: activeRecording.status, logs: activeRecording.logs });
     }
   });
   return json(res, 200, { id, status: 'recording', startedAt: activeRecording.startedAt });
@@ -88,6 +114,7 @@ async function stopRecording(req, res) {
   if (!activeRecording) return json(res, 404, { error: 'No recording is active.' });
   const recording = activeRecording;
   if (recording.status === 'recording') {
+    recordLog('stopping', { id: recording.id, pid: recording.child.pid });
     recording.status = 'stopping';
     recording.child.kill('SIGINT');
   }
@@ -100,10 +127,12 @@ async function stopRecording(req, res) {
     const file = await stat(recording.outputPath);
     if (!file.size) throw new Error('The recorder produced an empty file.');
   } catch (error) {
+    recordLog('output-invalid', { id: recording.id, error: error.message, logs: recording.logs });
     activeRecording = null;
     return json(res, 500, { error: error.message, logs: recording.logs });
   }
   activeRecording = null;
+  recordLog('saved', { id: recording.id, bytes: (await stat(recording.outputPath)).size });
   return json(res, 200, { id: recording.id, status: 'stopped', durationMs: Date.now() - recording.startedAt });
 }
 

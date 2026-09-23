@@ -66,6 +66,10 @@ const recordStatusEl = document.getElementById('recordStatus');
 const recordHintEl = document.getElementById('recordHint');
 const recordTimerEl = document.getElementById('recordTimer');
 const recordIndicatorEl = document.getElementById('recordIndicator');
+const recorderInstallDialog = document.getElementById('recorderInstallDialog');
+const recorderInstallCloseBtn = document.getElementById('recorderInstallCloseBtn');
+const copyRecorderInstallBtn = document.getElementById('copyRecorderInstallBtn');
+const recorderInstallError = document.getElementById('recorderInstallError');
 
 const ctx = waveCanvas.getContext('2d');
 const eqGraphCtx = eqGraphCanvas.getContext('2d');
@@ -484,6 +488,15 @@ function formatRecordTime(seconds) {
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
+const RECORDER_INSTALL_COMMANDS = 'git clone https://github.com/tangkk/sysaudio-rec.git ~/Projects/sysaudio-rec\ncd ~/Projects/sysaudio-rec\nswift build -c release';
+
+function showRecorderInstallDialog(message = '') {
+  if (!recorderInstallDialog) return;
+  recorderInstallError.hidden = !message;
+  recorderInstallError.textContent = message;
+  if (!recorderInstallDialog.open) recorderInstallDialog.showModal();
+}
+
 function drawLiveRecordingWaveform({ schedule = true } = {}) {
   if (!systemRecording.active) return;
   resizeCanvasForDisplay();
@@ -503,7 +516,7 @@ function drawLiveRecordingWaveform({ schedule = true } = {}) {
   ctx.stroke();
   const barWidth = Math.max(2, width / samples.length - 1);
   samples.forEach((value, index) => {
-    const amplitude = Math.max(0.02, Math.min(1, value * 5));
+    const amplitude = Math.max(0.025, Math.min(1, Math.sqrt(value) * 1.15));
     const barHeight = amplitude * height * .78;
     const x = index * (barWidth + 1);
     ctx.fillStyle = '#b91c1c';
@@ -534,11 +547,12 @@ async function refreshRecordingStatus() {
     const fileProgress = status.fileSize > systemRecording.lastFileSize;
     systemRecording.lastFileSize = status.fileSize || systemRecording.lastFileSize;
     systemRecording.meterSamples = status.meter?.samples || [];
+    if (!status.processAlive) console.error('[recording] sysaudio-rec is no longer running', status);
     drawLiveRecordingWaveform({ schedule: false });
     recordTimerEl.textContent = formatRecordTime(elapsed);
     if (status.processAlive && status.meter?.samples?.length) {
       recordIndicatorEl.className = 'record-indicator is-live';
-      recordHintEl.textContent = `sysaudio-rec is capturing audio · ${Math.round(status.fileSize / 1024)} KB written · live waveform active`;
+      recordHintEl.textContent = `sysaudio-rec is capturing audio · peak ${(status.meter.peak * 100).toFixed(0)}% · ${Math.round(status.fileSize / 1024)} KB written`;
     } else if (status.processAlive && (fileProgress || elapsed < 3)) {
       recordIndicatorEl.className = 'record-indicator is-live';
       recordHintEl.textContent = `sysaudio-rec is running · ${Math.round(status.fileSize / 1024)} KB written · waiting for audio meter`;
@@ -550,20 +564,43 @@ async function refreshRecordingStatus() {
       recordHintEl.textContent = 'The recorder process stopped unexpectedly. Stop and retry.';
     }
   } catch (error) {
+    console.error('[recording] status request failed:', error);
     recordIndicatorEl.className = 'record-indicator is-warning';
     recordHintEl.textContent = 'Cannot confirm recorder status; the local recording service may have stopped.';
   }
 }
 
+async function readRecordingApiResponse(response) {
+  const body = await response.text();
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    if (response.status === 404) {
+      throw new Error('Recording service is unavailable. Start this project with “npm run dev”, not “vite”.');
+    }
+    throw new Error(`Recording service returned HTTP ${response.status}.`);
+  }
+}
+
 async function startSystemRecording() {
-  if (systemRecording.active || processingState.active) return;
+  if (systemRecording.active) return;
+  if (processingState.active) {
+    recordHintEl.textContent = 'Wait for the current media task to finish before recording.';
+    setStatus('Recording is unavailable while media is processing.');
+    return;
+  }
   recordBtn.disabled = true;
+  console.info('[recording] start requested');
   recordStatusEl.textContent = 'Starting system recorder…';
-  recordHintEl.textContent = 'Starting sysaudio-rec locally.';
+    recordHintEl.textContent = 'Starting sysaudio-rec locally.';
   try {
     const response = await fetch('/api/record/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Could not start sysaudio-rec.');
+    const result = await readRecordingApiResponse(response);
+    if (!response.ok) {
+      if (result.code === 'RECORDER_NOT_INSTALLED') showRecorderInstallDialog(result.error);
+      throw new Error(result.error || 'Could not start sysaudio-rec.');
+    }
+    console.info('[recording] sysaudio-rec started', result);
     systemRecording = { active: true, id: result.id, startedAt: Date.now(), rafId: null, statusTimer: null, lastFileSize: 0, meterSamples: [] };
     recordBtn.disabled = false;
     recordBtn.classList.add('is-recording');
@@ -576,6 +613,7 @@ async function startSystemRecording() {
     await refreshRecordingStatus();
     systemRecording.statusTimer = setInterval(refreshRecordingStatus, 100);
   } catch (error) {
+    console.error('System recording start failed:', error);
     recordBtn.disabled = false;
     recordStatusEl.textContent = 'Ready to record';
     recordHintEl.textContent = error.message || 'Could not start system audio capture.';
@@ -586,6 +624,7 @@ async function startSystemRecording() {
 async function stopSystemRecording() {
   if (!systemRecording.active) return;
   const recordingId = systemRecording.id;
+  console.info('[recording] stop requested', { recordingId });
   recordBtn.disabled = true;
   recordStatusEl.textContent = 'Finishing MP3…';
   recordHintEl.textContent = 'sysaudio-rec is finalizing the recording.';
@@ -593,8 +632,9 @@ async function stopSystemRecording() {
   stopLiveRecordingWaveform();
   try {
     const response = await fetch('/api/record/stop', { method: 'POST' });
-    const result = await response.json();
+    const result = await readRecordingApiResponse(response);
     if (!response.ok) throw new Error(result.error || 'Could not stop sysaudio-rec.');
+    console.info('[recording] sysaudio-rec stopped', result);
     const fileResponse = await fetch(`/api/record/file?id=${encodeURIComponent(recordingId)}`);
     if (!fileResponse.ok) throw new Error('The recording file could not be read.');
     const blob = await fileResponse.blob();
@@ -608,6 +648,7 @@ async function stopSystemRecording() {
     await loadFile(file);
     setStatus('System recording loaded.');
   } catch (error) {
+    console.error('[recording] stop/finalize failed:', error);
     recordBtn.classList.remove('is-recording');
     recordBtn.textContent = '● Record';
     recordBtn.disabled = false;
@@ -620,6 +661,17 @@ async function stopSystemRecording() {
 
 if (recordBtn) recordBtn.addEventListener('click', () => {
   if (systemRecording.active) stopSystemRecording(); else startSystemRecording();
+});
+if (recorderInstallCloseBtn) recorderInstallCloseBtn.addEventListener('click', () => recorderInstallDialog.close());
+if (copyRecorderInstallBtn) copyRecorderInstallBtn.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(RECORDER_INSTALL_COMMANDS);
+    copyRecorderInstallBtn.textContent = 'Copied';
+    setTimeout(() => { copyRecorderInstallBtn.textContent = 'Copy commands'; }, 1500);
+  } catch (error) {
+    recorderInstallError.hidden = false;
+    recorderInstallError.textContent = 'Copy failed. Select the commands above manually.';
+  }
 });
 
 function updatePlaybackRate(rate) {

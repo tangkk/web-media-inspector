@@ -583,6 +583,24 @@ video.ready {
 .record-timer { min-width: 42px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
 @keyframes record-pulse { 50% { box-shadow: 0 0 0 5px rgba(185, 28, 28, .12); } }
 
+.recorder-install-dialog {
+  width: min(520px, calc(100vw - 32px));
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px;
+  color: var(--text);
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .22);
+}
+.recorder-install-dialog::backdrop { background: rgba(0, 0, 0, .38); }
+.recorder-install-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.recorder-install-header h2 { margin: 2px 0 0; font-size: 18px; }
+.recorder-install-dialog p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.recorder-install-dialog pre { overflow-x: auto; padding: 12px; border-radius: 10px; background: #171717; color: #f6f6f0; font-size: 12px; line-height: 1.55; }
+.recorder-install-actions { display: flex; align-items: center; gap: 8px; }
+.recorder-install-actions a { text-decoration: none; }
+.recorder-install-error { color: #b91c1c !important; }
+
 @media (min-width: 960px) and (max-width: 1100px) {
   .record-panel { align-items: flex-start; flex-direction: column; }
   .record-actions { width: 100%; }
