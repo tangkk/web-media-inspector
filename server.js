@@ -10,7 +10,8 @@ import { createServer as createViteServer } from 'vite';
 const cliPortIndex = process.argv.indexOf('--port');
 const port = Number(process.env.PORT || (cliPortIndex >= 0 ? process.argv[cliPortIndex + 1] : 5173));
 const hostIndex = process.argv.indexOf('--host');
-const host = hostIndex >= 0 ? process.argv[hostIndex + 1] : (process.env.HOST || '0.0.0.0');
+const host = hostIndex >= 0 ? process.argv[hostIndex + 1] : (process.env.HOST || '127.0.0.1');
+const serviceOnly = process.env.RECORDING_SERVICE_ONLY === '1';
 const projectRecorder = join(homedir(), 'Projects', 'sysaudio-rec', '.build', 'release', 'sysaudio-rec');
 const installedRecorder = join(homedir(), 'sysaudio-rec');
 const recordBinary = process.env.SYS_RECORD_BIN || (existsSync(projectRecorder) ? projectRecorder : installedRecorder);
@@ -169,7 +170,7 @@ async function serveRecording(req, res, url) {
   }
 }
 
-const vite = await createViteServer({ server: { middlewareMode: true, hmr: false, ws: false }, appType: 'spa' });
+const vite = serviceOnly ? null : await createViteServer({ server: { middlewareMode: true, hmr: false, ws: false }, appType: 'spa' });
 const server = createServer(async (req, res) => {
   const origin = req.headers.origin;
   if (origin && allowedBrowserOrigins.has(origin)) {
@@ -177,6 +178,9 @@ const server = createServer(async (req, res) => {
     res.setHeader('Vary', 'Origin');
   }
   if (req.method === 'OPTIONS') {
+    if (!origin || !allowedBrowserOrigins.has(origin)) {
+      return json(res, 403, { error: 'Origin is not allowed.' });
+    }
     res.writeHead(204, {
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
@@ -185,6 +189,9 @@ const server = createServer(async (req, res) => {
     return res.end();
   }
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname.startsWith('/api/record/') && (!origin || !allowedBrowserOrigins.has(origin))) {
+    return json(res, 403, { error: 'Origin is not allowed.' });
+  }
   if (url.pathname === '/api/record/start' && req.method === 'POST') {
     try { return await startRecording(req, res); } catch (error) { return json(res, 400, { error: error.message }); }
   }
@@ -193,12 +200,13 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname === '/api/record/status' && req.method === 'GET') return recordingStatus(res);
   if (url.pathname === '/api/record/file' && req.method === 'GET') return serveRecording(req, res, url);
+  if (serviceOnly) return json(res, 404, { error: 'Recording service endpoint not found.' });
   vite.middlewares(req, res, (error) => {
     if (error) { res.statusCode = 500; res.end(error.message); }
   });
 });
 
 server.listen(port, host, () => {
-  console.log(`Web Media Inspector listening on http://localhost:${port}`);
+  console.log(`${serviceOnly ? 'Recording bridge' : 'Web Media Inspector'} listening on http://${host}:${port}`);
   console.log(`System recorder: ${recordBinary}`);
 });

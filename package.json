@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node server.js",
+    "recording-service": "RECORDING_SERVICE_ONLY=1 node server.js",
     "build": "vite build",
     "preview": "vite preview"
   },
