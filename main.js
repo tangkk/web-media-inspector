@@ -2037,6 +2037,7 @@ function renderMediaMetadata(metadata = {}) {
   currentMetadata = metadata;
   if (!mediaMetadataEl) return;
   const fields = [
+    ['File name', currentFile?.name],
     ['Title', metadata.title], ['Artist', metadata.artist], ['Album', metadata.album],
     ['Year', metadata.year], ['Genre', metadata.genre], ['Track', metadata.track],
     ['BPM', metadata.bpm], ['Key', metadata.key],
