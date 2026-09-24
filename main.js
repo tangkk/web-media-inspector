@@ -77,10 +77,8 @@ const recorderInstallCommands = document.getElementById('recorderInstallCommands
 const mediaMetadataEl = document.getElementById('mediaMetadata');
 const mediaMetadataFormatEl = document.getElementById('mediaMetadataFormat');
 const mediaMetadataFieldsEl = document.getElementById('mediaMetadataFields');
-const mediaChordsEl = document.getElementById('mediaChords');
-const mediaChordsTextEl = document.getElementById('mediaChordsText');
-const mediaLyricsEl = document.getElementById('mediaLyrics');
-const mediaLyricsTextEl = document.getElementById('mediaLyricsText');
+const mediaSectionsEl = document.getElementById('mediaSections');
+const mediaSectionsTextEl = document.getElementById('mediaSectionsText');
 
 const ctx = waveCanvas.getContext('2d');
 const eqGraphCtx = eqGraphCanvas.getContext('2d');
@@ -2056,15 +2054,24 @@ function renderMediaMetadata(metadata = {}) {
   });
   mediaMetadataFormatEl.textContent = fields.length || metadata.chords || metadata.lyrics ? 'ID3' : '';
   const chordSections = parseChordSections(metadata.chords);
-  mediaChordsTextEl.textContent = chordSections.length
-    ? chordSections.map((section) => `${section.name}: ${section.chords.replace(/\s*\|\s*/g, ' | ')}`).join('\n')
-    : (metadata.chords ? metadata.chords.replace(/\s*\|\s*/g, ' | ').trim() : '');
-  mediaChordsEl.hidden = !metadata.chords;
   const lyricSections = parseLyricSections(metadata.lyrics);
-  mediaLyricsTextEl.textContent = lyricSections.length
-    ? lyricSections.map((section) => `${section.name}\n${section.lyrics}`).join('\n\n')
-    : (metadata.lyrics || '');
-  mediaLyricsEl.hidden = !metadata.lyrics;
+  const sectionCount = Math.max(chordSections.length, lyricSections.length);
+  const combinedSections = Array.from({ length: sectionCount }, (_, index) => {
+    const chordSection = chordSections[index];
+    const lyricSection = lyricSections[index];
+    const name = chordSection?.name || lyricSection?.name || `Section ${index + 1}`;
+    const lyrics = lyricSection?.lyrics;
+    return [
+      name,
+      chordSection ? `Chords: ${chordSection.chords.replace(/\s*\|\s*/g, ' | ')}` : '',
+      lyrics || '',
+    ].filter(Boolean).join('\n');
+  });
+  mediaSectionsTextEl.textContent = combinedSections.length
+    ? combinedSections.join('\n\n')
+    : [metadata.chords ? `Chords: ${metadata.chords.replace(/\s*\|\s*/g, ' | ').trim()}` : '', metadata.lyrics || '']
+      .filter(Boolean).join('\n\n');
+  mediaSectionsEl.hidden = !metadata.chords && !metadata.lyrics;
   mediaMetadataEl.hidden = !(fields.length || metadata.chords || metadata.lyrics);
 }
 
