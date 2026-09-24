@@ -74,6 +74,11 @@ const copyRecorderInstallBtn = document.getElementById('copyRecorderInstallBtn')
 const recorderInstallError = document.getElementById('recorderInstallError');
 const recorderInstallIntro = document.getElementById('recorderInstallIntro');
 const recorderInstallCommands = document.getElementById('recorderInstallCommands');
+const mediaMetadataEl = document.getElementById('mediaMetadata');
+const mediaMetadataFormatEl = document.getElementById('mediaMetadataFormat');
+const mediaMetadataFieldsEl = document.getElementById('mediaMetadataFields');
+const mediaLyricsEl = document.getElementById('mediaLyrics');
+const mediaLyricsTextEl = document.getElementById('mediaLyricsText');
 
 const ctx = waveCanvas.getContext('2d');
 const eqGraphCtx = eqGraphCanvas.getContext('2d');
@@ -97,6 +102,7 @@ let shortLoopPlayback = {
 let waveformPeaks = [];
 let sourcePeaks = [];
 let currentFile = null;
+let currentMetadata = null;
 let currentJobId = 0;
 let playlistItems = [];
 let activePlaylistId = null;
@@ -1849,6 +1855,147 @@ function syncMediaMode(file) {
   viewerCard.classList.toggle('audio-mode', isAudio);
 }
 
+function isMp3File(file) {
+  return Boolean(file && (file.type === 'audio/mpeg' || /\.mp3$/i.test(file.name)));
+}
+
+function decodeLatin1(bytes) {
+  return new TextDecoder('iso-8859-1').decode(bytes);
+}
+
+function decodeUtf16(bytes, littleEndian) {
+  const usableLength = bytes.byteLength - (bytes.byteLength % 2);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, usableLength);
+  let result = '';
+  for (let index = 0; index < usableLength; index += 2) {
+    result += String.fromCharCode(view.getUint16(index, littleEndian));
+  }
+  return result;
+}
+
+function trimMetadataText(value) {
+  return String(value || '').replace(/[\u0000\u0001\u0002\u0003]+/g, '').replace(/\s+$/g, '').trim();
+}
+
+function decodeId3Text(bytes) {
+  if (!bytes?.length) return '';
+  const encoding = bytes[0];
+  const payload = bytes.subarray(1);
+  if (encoding === 1) {
+    if (payload.length >= 2 && payload[0] === 0xff && payload[1] === 0xfe) {
+      return trimMetadataText(decodeUtf16(payload.subarray(2), true));
+    }
+    if (payload.length >= 2 && payload[0] === 0xfe && payload[1] === 0xff) {
+      return trimMetadataText(decodeUtf16(payload.subarray(2), false));
+    }
+    return trimMetadataText(decodeUtf16(payload, false));
+  }
+  if (encoding === 2) return trimMetadataText(decodeUtf16(payload, false));
+  if (encoding === 3) return trimMetadataText(new TextDecoder('utf-8').decode(payload));
+  return trimMetadataText(decodeLatin1(payload));
+}
+
+function findTerminator(bytes, start, encoding) {
+  if (encoding === 1 || encoding === 2) {
+    for (let index = start; index + 1 < bytes.length; index += 2) {
+      if (bytes[index] === 0 && bytes[index + 1] === 0) return index;
+    }
+  } else {
+    const index = bytes.indexOf(0, start);
+    if (index >= 0) return index;
+  }
+  return bytes.length;
+}
+
+function decodeUnsynchronised(bytes) {
+  const result = [];
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === 0xff && bytes[index + 1] === 0x00) {
+      result.push(0xff);
+      index += 1;
+    } else {
+      result.push(bytes[index]);
+    }
+  }
+  return new Uint8Array(result);
+}
+
+function parseId3Lyrics(frameBytes) {
+  if (!frameBytes.length) return '';
+  const encoding = frameBytes[0];
+  const descriptionStart = 4;
+  const terminator = findTerminator(frameBytes, descriptionStart, encoding);
+  const lyricsStart = Math.min(frameBytes.length, terminator + ((encoding === 1 || encoding === 2) ? 2 : 1));
+  return decodeId3Text(new Uint8Array([encoding, ...frameBytes.subarray(lyricsStart)]));
+}
+
+function parseId3Tag(bytes) {
+  if (bytes.length < 10 || String.fromCharCode(...bytes.subarray(0, 3)) !== 'ID3') return {};
+  const majorVersion = bytes[3];
+  const flags = bytes[5];
+  const tagSize = majorVersion >= 4
+    ? ((bytes[6] & 0x7f) << 21) | ((bytes[7] & 0x7f) << 14) | ((bytes[8] & 0x7f) << 7) | (bytes[9] & 0x7f)
+    : (bytes[6] << 21) | (bytes[7] << 14) | (bytes[8] << 7) | bytes[9];
+  const tagEnd = Math.min(bytes.length, 10 + tagSize);
+  let offset = 10;
+  if ((flags & 0x40) !== 0 && majorVersion >= 3 && offset + 4 <= tagEnd) {
+    const size = majorVersion >= 4
+      ? ((bytes[offset] & 0x7f) << 21) | ((bytes[offset + 1] & 0x7f) << 14) | ((bytes[offset + 2] & 0x7f) << 7) | (bytes[offset + 3] & 0x7f)
+      : (bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
+    offset += 4 + (majorVersion >= 3 ? 2 : 0) + size;
+  }
+  const metadata = {};
+  const frameMap = { TIT2: 'title', TPE1: 'artist', TALB: 'album', TDRC: 'year', TYER: 'year', TCON: 'genre', TRCK: 'track' };
+  while (offset + 10 <= tagEnd) {
+    const id = decodeLatin1(bytes.subarray(offset, offset + 4));
+    if (!/^[A-Z0-9]{4}$/.test(id) || id === '\u0000\u0000\u0000\u0000') break;
+    const size = majorVersion >= 4
+      ? ((bytes[offset + 4] & 0x7f) << 21) | ((bytes[offset + 5] & 0x7f) << 14) | ((bytes[offset + 6] & 0x7f) << 7) | (bytes[offset + 7] & 0x7f)
+      : (bytes[offset + 4] << 24) | (bytes[offset + 5] << 16) | (bytes[offset + 6] << 8) | bytes[offset + 7];
+    offset += 10;
+    if (!size || offset + size > tagEnd) break;
+    const frame = bytes.subarray(offset, offset + size);
+    if (frameMap[id] && !metadata[frameMap[id]]) metadata[frameMap[id]] = decodeId3Text(frame);
+    if (id === 'USLT' && !metadata.lyrics) metadata.lyrics = parseId3Lyrics(frame);
+    offset += size;
+  }
+  return metadata;
+}
+
+function parseId3v1(bytes) {
+  if (bytes.length < 128 || decodeLatin1(bytes.subarray(bytes.length - 128, bytes.length - 125)) !== 'TAG') return {};
+  const base = bytes.length - 128;
+  const read = (start, length) => trimMetadataText(decodeLatin1(bytes.subarray(base + start, base + start + length)));
+  return { title: read(3, 30), artist: read(33, 30), album: read(63, 30), year: read(93, 4), genre: read(127, 1) };
+}
+
+async function readMediaMetadata(file) {
+  if (!isMp3File(file)) return {};
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return { ...parseId3v1(bytes), ...parseId3Tag(bytes.subarray(0, Math.min(bytes.length, 10 + 16 * 1024 * 1024))) };
+}
+
+function renderMediaMetadata(metadata = {}) {
+  currentMetadata = metadata;
+  if (!mediaMetadataEl) return;
+  const fields = [
+    ['Title', metadata.title], ['Artist', metadata.artist], ['Album', metadata.album],
+    ['Year', metadata.year], ['Genre', metadata.genre], ['Track', metadata.track],
+  ].filter(([, value]) => value);
+  mediaMetadataFieldsEl.replaceChildren();
+  fields.forEach(([label, value]) => {
+    const item = document.createElement('div');
+    item.className = 'media-metadata-item';
+    item.innerHTML = `<span>${label}</span><strong></strong>`;
+    item.querySelector('strong').textContent = value;
+    mediaMetadataFieldsEl.append(item);
+  });
+  mediaMetadataFormatEl.textContent = fields.length || metadata.lyrics ? 'ID3' : '';
+  mediaLyricsTextEl.textContent = metadata.lyrics || '';
+  mediaLyricsEl.hidden = !metadata.lyrics;
+  mediaMetadataEl.hidden = !(fields.length || metadata.lyrics);
+}
+
 function isTransportStreamFile(file) {
   if (!file) return false;
   return Boolean(/\.(ts|mts|m2ts)$/i.test(file.name));
@@ -2856,11 +3003,18 @@ async function loadFile(file) {
   const jobId = ++currentJobId;
   let mediaFile = file;
   currentFile = file;
+  renderMediaMetadata({});
   syncMediaMode(file);
   clearLoop();
   setStatus('Loading file…');
 
   try {
+    try {
+      const metadata = await readMediaMetadata(file);
+      if (jobId === currentJobId) renderMediaMetadata(metadata);
+    } catch (metadataError) {
+      console.warn('[metadata] Could not read ID3 metadata:', metadataError);
+    }
     if (isTransportStreamFile(file)) {
       startProcessing(
         'Preparing TS video',
@@ -3001,6 +3155,7 @@ function clearCurrentFile() {
   currentJobId += 1;
   currentTranscribeJobId += 1;
   currentFile = null;
+  renderMediaMetadata({});
   viewerCard.classList.remove('audio-mode');
   lastKnownDuration = 0;
   lastTimelineTextSecond = -1;

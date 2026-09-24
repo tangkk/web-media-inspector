@@ -119,6 +119,17 @@
               <span id="recordTimer" class="record-timer">00:00</span>
             </div>
           </div>
+          <section id="mediaMetadata" class="media-metadata" aria-label="Media metadata" hidden>
+            <div class="media-metadata-header">
+              <span class="record-kicker">FILE METADATA</span>
+              <span id="mediaMetadataFormat" class="media-metadata-format"></span>
+            </div>
+            <div id="mediaMetadataFields" class="media-metadata-fields"></div>
+            <details id="mediaLyrics" class="media-lyrics" hidden>
+              <summary>Lyrics</summary>
+              <pre id="mediaLyricsText"></pre>
+            </details>
+          </section>
           <dialog id="recorderInstallDialog" class="recorder-install-dialog">
             <div class="recorder-install-header">
               <div>
