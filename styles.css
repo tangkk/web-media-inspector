@@ -625,6 +625,11 @@ video.ready {
   white-space: pre-wrap;
 }
 
+#mediaSectionsText {
+  max-height: none;
+  overflow: visible;
+}
+
 @media (min-width: 721px) {
   .media-metadata:not([hidden]) {
     display: block;
