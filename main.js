@@ -1929,6 +1929,16 @@ function parseId3Lyrics(frameBytes) {
   return decodeId3Text(new Uint8Array([encoding, ...frameBytes.subarray(lyricsStart)]));
 }
 
+function parseId3UserText(frameBytes) {
+  if (!frameBytes.length) return null;
+  const encoding = frameBytes[0];
+  const descriptionEnd = findTerminator(frameBytes, 1, encoding);
+  const valueStart = Math.min(frameBytes.length, descriptionEnd + ((encoding === 1 || encoding === 2) ? 2 : 1));
+  const description = decodeId3Text(new Uint8Array([encoding, ...frameBytes.subarray(1, descriptionEnd)]));
+  const value = decodeId3Text(new Uint8Array([encoding, ...frameBytes.subarray(valueStart)]));
+  return { description: description.toUpperCase(), value };
+}
+
 function parseId3Tag(bytes) {
   if (bytes.length < 10 || String.fromCharCode(...bytes.subarray(0, 3)) !== 'ID3') return {};
   const majorVersion = bytes[3];
@@ -1945,7 +1955,7 @@ function parseId3Tag(bytes) {
     offset += 4 + (majorVersion >= 3 ? 2 : 0) + size;
   }
   const metadata = {};
-  const frameMap = { TIT2: 'title', TPE1: 'artist', TALB: 'album', TDRC: 'year', TYER: 'year', TCON: 'genre', TRCK: 'track' };
+  const frameMap = { TIT2: 'title', TPE1: 'artist', TALB: 'album', TDRC: 'year', TYER: 'year', TCON: 'genre', TRCK: 'track', TBPM: 'bpm', TKEY: 'key' };
   while (offset + 10 <= tagEnd) {
     const id = decodeLatin1(bytes.subarray(offset, offset + 4));
     if (!/^[A-Z0-9]{4}$/.test(id) || id === '\u0000\u0000\u0000\u0000') break;
@@ -1956,6 +1966,11 @@ function parseId3Tag(bytes) {
     if (!size || offset + size > tagEnd) break;
     const frame = bytes.subarray(offset, offset + size);
     if (frameMap[id] && !metadata[frameMap[id]]) metadata[frameMap[id]] = decodeId3Text(frame);
+    if (id === 'TXXX') {
+      const userText = parseId3UserText(frame);
+      if (userText?.description === 'CHORDS' && !metadata.chords) metadata.chords = userText.value;
+      if (userText?.description === 'STRUCT' && !metadata.structure) metadata.structure = userText.value;
+    }
     if (id === 'USLT' && !metadata.lyrics) metadata.lyrics = parseId3Lyrics(frame);
     offset += size;
   }
@@ -1981,6 +1996,8 @@ function renderMediaMetadata(metadata = {}) {
   const fields = [
     ['Title', metadata.title], ['Artist', metadata.artist], ['Album', metadata.album],
     ['Year', metadata.year], ['Genre', metadata.genre], ['Track', metadata.track],
+    ['BPM', metadata.bpm], ['Key', metadata.key], ['Chords', metadata.chords],
+    ['Structure', metadata.structure],
   ].filter(([, value]) => value);
   mediaMetadataFieldsEl.replaceChildren();
   fields.forEach(([label, value]) => {
