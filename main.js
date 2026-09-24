@@ -1968,7 +1968,7 @@ function parseLyricSections(value) {
       return sections.map((section) => ({
         name: section.struct || section.structure || section.name || 'Section',
         lyrics: Array.isArray(section.lyrics) ? section.lyrics.join('\n') : String(section.lyrics || ''),
-      })).filter((section) => section.lyrics);
+      })).filter((section) => section.name);
     }
   } catch (error) {
     // USLT may still contain ordinary plain-text lyrics.
@@ -2062,14 +2062,14 @@ function renderMediaMetadata(metadata = {}) {
     const name = chordSection?.name || lyricSection?.name || `Section ${index + 1}`;
     const lyrics = lyricSection?.lyrics;
     return [
-      name,
-      chordSection ? `Chords: ${chordSection.chords.replace(/\s*\|\s*/g, ' | ')}` : '',
+      `[${name}]`,
+      chordSection ? chordSection.chords.replace(/\s*\|\s*/g, ' | ') : '',
       lyrics || '',
     ].filter(Boolean).join('\n');
   });
   mediaSectionsTextEl.textContent = combinedSections.length
     ? combinedSections.join('\n\n')
-    : [metadata.chords ? `Chords: ${metadata.chords.replace(/\s*\|\s*/g, ' | ').trim()}` : '', metadata.lyrics || '']
+    : [metadata.chords ? metadata.chords.replace(/\s*\|\s*/g, ' | ').trim() : '', metadata.lyrics || '']
       .filter(Boolean).join('\n\n');
   mediaSectionsEl.hidden = !metadata.chords && !metadata.lyrics;
   mediaMetadataEl.hidden = !(fields.length || metadata.chords || metadata.lyrics);
