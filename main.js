@@ -2054,8 +2054,8 @@ function renderMediaMetadata(metadata = {}) {
   mediaMetadataFormatEl.textContent = fields.length || metadata.chords || metadata.lyrics ? 'ID3' : '';
   const chordSections = parseChordSections(metadata.chords);
   mediaChordsTextEl.textContent = chordSections.length
-    ? chordSections.map((section) => `${section.name}\n${section.chords.replace(/\s*\|\s*/g, '\n')}`).join('\n\n')
-    : (metadata.chords ? metadata.chords.replace(/\s*\|\s*/g, '\n').trim() : '');
+    ? chordSections.map((section) => `${section.name}: ${section.chords.replace(/\s*\|\s*/g, ' | ')}`).join('\n')
+    : (metadata.chords ? metadata.chords.replace(/\s*\|\s*/g, ' | ').trim() : '');
   mediaChordsEl.hidden = !metadata.chords;
   const lyricSections = parseLyricSections(metadata.lyrics);
   mediaLyricsTextEl.textContent = lyricSections.length

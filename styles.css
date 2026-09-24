@@ -594,12 +594,11 @@ video.ready {
 
 .media-metadata-item strong {
   display: block;
-  overflow: hidden;
   margin-top: 2px;
   font-size: 12px;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .media-lyrics {
