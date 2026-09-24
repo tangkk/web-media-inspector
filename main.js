@@ -2043,6 +2043,7 @@ function renderMediaMetadata(metadata = {}) {
     ['Structure', metadata.structure], ['CFG', metadata.cfg], ['DB', metadata.db],
     ['Donor', metadata.donor], ['Speaker', metadata.speaker], ['Seed', metadata.seed],
     ['Checkpoint', metadata.checkpoint],
+    ['Steps', metadata.steps], ['Windows', metadata.windows], ['Seams', metadata.seams],
   ].filter(([, value]) => value);
   mediaMetadataFieldsEl.replaceChildren();
   fields.forEach(([label, value]) => {
