@@ -77,6 +77,8 @@ const recorderInstallCommands = document.getElementById('recorderInstallCommands
 const mediaMetadataEl = document.getElementById('mediaMetadata');
 const mediaMetadataFormatEl = document.getElementById('mediaMetadataFormat');
 const mediaMetadataFieldsEl = document.getElementById('mediaMetadataFields');
+const mediaChordsEl = document.getElementById('mediaChords');
+const mediaChordsTextEl = document.getElementById('mediaChordsText');
 const mediaLyricsEl = document.getElementById('mediaLyrics');
 const mediaLyricsTextEl = document.getElementById('mediaLyricsText');
 
@@ -1939,6 +1941,43 @@ function parseId3UserText(frameBytes) {
   return { description: description.toUpperCase(), value };
 }
 
+function parseChordSections(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    const sections = Array.isArray(parsed) ? parsed : parsed.sections;
+    if (Array.isArray(sections)) {
+      return sections.map((section) => ({
+        name: section.struct || section.structure || section.name || 'Section',
+        chords: Array.isArray(section.chords) ? section.chords.join(' | ') : String(section.chords || ''),
+      })).filter((section) => section.chords);
+    }
+  } catch (error) {
+    // CHORDS may still use the legacy pipe-separated format.
+  }
+  return String(value).split(/\r?\n/).map((line) => {
+    const match = line.match(/^\s*([^:]+):\s*(.+)$/);
+    return match ? { name: match[1].trim(), chords: match[2].trim() } : null;
+  }).filter(Boolean);
+}
+
+function parseLyricSections(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    const sections = Array.isArray(parsed) ? parsed : parsed.sections;
+    if (Array.isArray(sections)) {
+      return sections.map((section) => ({
+        name: section.struct || section.structure || section.name || 'Section',
+        lyrics: Array.isArray(section.lyrics) ? section.lyrics.join('\n') : String(section.lyrics || ''),
+      })).filter((section) => section.lyrics);
+    }
+  } catch (error) {
+    // USLT may still contain ordinary plain-text lyrics.
+  }
+  return [];
+}
+
 function parseId3Tag(bytes) {
   if (bytes.length < 10 || String.fromCharCode(...bytes.subarray(0, 3)) !== 'ID3') return {};
   const majorVersion = bytes[3];
@@ -1968,8 +2007,12 @@ function parseId3Tag(bytes) {
     if (frameMap[id] && !metadata[frameMap[id]]) metadata[frameMap[id]] = decodeId3Text(frame);
     if (id === 'TXXX') {
       const userText = parseId3UserText(frame);
-      if (userText?.description === 'CHORDS' && !metadata.chords) metadata.chords = userText.value;
-      if (userText?.description === 'STRUCT' && !metadata.structure) metadata.structure = userText.value;
+      if (userText?.description) {
+        const customKey = userText.description.toLowerCase();
+        if (!metadata[customKey]) metadata[customKey] = userText.value;
+        if (userText.description === 'CHORDS' && !metadata.chords) metadata.chords = userText.value;
+        if (userText.description === 'STRUCT' && !metadata.structure) metadata.structure = userText.value;
+      }
     }
     if (id === 'USLT' && !metadata.lyrics) metadata.lyrics = parseId3Lyrics(frame);
     offset += size;
@@ -1996,8 +2039,9 @@ function renderMediaMetadata(metadata = {}) {
   const fields = [
     ['Title', metadata.title], ['Artist', metadata.artist], ['Album', metadata.album],
     ['Year', metadata.year], ['Genre', metadata.genre], ['Track', metadata.track],
-    ['BPM', metadata.bpm], ['Key', metadata.key], ['Chords', metadata.chords],
-    ['Structure', metadata.structure],
+    ['BPM', metadata.bpm], ['Key', metadata.key],
+    ['Structure', metadata.structure], ['CFG', metadata.cfg], ['DB', metadata.db],
+    ['Donor', metadata.donor], ['Speaker', metadata.speaker], ['Seed', metadata.seed],
   ].filter(([, value]) => value);
   mediaMetadataFieldsEl.replaceChildren();
   fields.forEach(([label, value]) => {
@@ -2007,10 +2051,18 @@ function renderMediaMetadata(metadata = {}) {
     item.querySelector('strong').textContent = value;
     mediaMetadataFieldsEl.append(item);
   });
-  mediaMetadataFormatEl.textContent = fields.length || metadata.lyrics ? 'ID3' : '';
-  mediaLyricsTextEl.textContent = metadata.lyrics || '';
+  mediaMetadataFormatEl.textContent = fields.length || metadata.chords || metadata.lyrics ? 'ID3' : '';
+  const chordSections = parseChordSections(metadata.chords);
+  mediaChordsTextEl.textContent = chordSections.length
+    ? chordSections.map((section) => `${section.name}\n${section.chords.replace(/\s*\|\s*/g, '\n')}`).join('\n\n')
+    : (metadata.chords ? metadata.chords.replace(/\s*\|\s*/g, '\n').trim() : '');
+  mediaChordsEl.hidden = !metadata.chords;
+  const lyricSections = parseLyricSections(metadata.lyrics);
+  mediaLyricsTextEl.textContent = lyricSections.length
+    ? lyricSections.map((section) => `${section.name}\n${section.lyrics}`).join('\n\n')
+    : (metadata.lyrics || '');
   mediaLyricsEl.hidden = !metadata.lyrics;
-  mediaMetadataEl.hidden = !(fields.length || metadata.lyrics);
+  mediaMetadataEl.hidden = !(fields.length || metadata.chords || metadata.lyrics);
 }
 
 function isTransportStreamFile(file) {
