@@ -700,7 +700,16 @@ async function stopSystemRecording() {
     recordStatusEl.textContent = 'Recording ready';
     recordIndicatorEl.className = 'record-indicator';
     recordHintEl.textContent = 'The finished MP3 has been loaded into the inspector.';
-    await loadFile(file);
+    if (isDesktopPlaylistEnabled()) {
+      const previousActivePlaylistId = activePlaylistId;
+      addFilesToPlaylist([file]);
+      const recordingItem = playlistItems[playlistItems.length - 1];
+      if (previousActivePlaylistId != null && recordingItem) {
+        await activatePlaylistItem(recordingItem.id);
+      }
+    } else {
+      await loadFile(file);
+    }
     setStatus('System recording loaded.');
   } catch (error) {
     console.error('[recording] stop/finalize failed:', error);
