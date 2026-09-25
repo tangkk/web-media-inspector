@@ -101,54 +101,6 @@
 
         <div class="wave-strip-shell">
           <button id="mobileAudioClearBtn" class="mobile-clear-btn mobile-audio-clear-btn" type="button" aria-label="Clear" title="Clear">×</button>
-          <div class="record-panel" id="recordPanel">
-            <div class="record-copy">
-              <span class="record-kicker">SYSTEM CAPTURE</span>
-              <strong><i id="recordIndicator" class="record-indicator"></i><span id="recordStatus">Ready to record</span></strong>
-              <span id="recordHint">Connects to the local sysaudio-rec service and leaves browser playback untouched.</span>
-            </div>
-            <div class="record-actions">
-              <label class="record-source" for="recordSource">
-                <span>Source</span>
-                <select id="recordSource">
-                  <option value="">Loopback / System audio (default)</option>
-                </select>
-              </label>
-              <button id="refreshRecordSourcesBtn" class="icon-btn" type="button" aria-label="Refresh input sources" title="Refresh input sources">↻</button>
-              <button id="recordBtn" class="record-btn" type="button">● Record</button>
-              <span id="recordTimer" class="record-timer">00:00</span>
-            </div>
-          </div>
-          <section id="mediaMetadata" class="media-metadata" aria-label="Media metadata" hidden>
-            <div class="media-metadata-header">
-              <span class="record-kicker">FILE METADATA</span>
-              <span id="mediaMetadataFormat" class="media-metadata-format"></span>
-            </div>
-            <div id="mediaMetadataFields" class="media-metadata-fields"></div>
-            <details id="mediaSections" class="media-lyrics" hidden>
-              <summary>Chords &amp; Lyrics</summary>
-              <pre id="mediaSectionsText"></pre>
-            </details>
-          </section>
-          <dialog id="recorderInstallDialog" class="recorder-install-dialog">
-            <div class="recorder-install-header">
-              <div>
-                <p class="record-kicker">SYSTEM CAPTURE</p>
-                <h2>Install sysaudio-rec</h2>
-              </div>
-              <button id="recorderInstallCloseBtn" class="icon-btn" type="button" aria-label="Close install instructions">×</button>
-            </div>
-            <p id="recorderInstallIntro">System recording needs a local helper running on this computer.</p>
-            <pre><code id="recorderInstallCommands">git clone https://github.com/tangkk/web-media-inspector.git ~/Projects/web-media-inspector
-cd ~/Projects/web-media-inspector
-npm install
-npm run dev</code></pre>
-            <div class="recorder-install-actions">
-              <button id="copyRecorderInstallBtn" class="file-btn" type="button">Copy commands</button>
-              <a class="file-btn" href="https://github.com/tangkk/sysaudio-rec" target="_blank" rel="noreferrer">Open GitHub</a>
-            </div>
-            <p id="recorderInstallError" class="recorder-install-error" hidden></p>
-          </dialog>
           <div class="wave-strip-toolbar">
             <div class="wave-toolbar-left">
               <button id="openFileBtn" class="file-btn toolbar-file-btn" type="button">Open</button>
@@ -219,6 +171,57 @@ npm run dev</code></pre>
             <input id="seekBar" type="range" min="0" max="1000" value="0" step="1" />
             <span id="remainingTimeText">-00:00</span>
           </div>
+
+          <section id="mediaMetadata" class="media-metadata" aria-label="Media metadata" hidden>
+            <div class="media-metadata-header">
+              <span class="record-kicker">FILE METADATA</span>
+              <span id="mediaMetadataFormat" class="media-metadata-format"></span>
+            </div>
+            <div id="mediaMetadataFields" class="media-metadata-fields"></div>
+            <details id="mediaSections" class="media-lyrics" hidden>
+              <summary>Chords &amp; Lyrics</summary>
+              <pre id="mediaSectionsText"></pre>
+            </details>
+          </section>
+
+          <div class="record-panel" id="recordPanel">
+            <div class="record-copy">
+              <span class="record-kicker">SYSTEM CAPTURE</span>
+              <strong><i id="recordIndicator" class="record-indicator"></i><span id="recordStatus">Ready to record</span></strong>
+              <span id="recordHint">Connects to the local sysaudio-rec service and leaves browser playback untouched.</span>
+            </div>
+            <div class="record-actions">
+              <label class="record-source" for="recordSource">
+                <span>Source</span>
+                <select id="recordSource">
+                  <option value="">Loopback / System audio (default)</option>
+                </select>
+              </label>
+              <button id="refreshRecordSourcesBtn" class="icon-btn" type="button" aria-label="Refresh input sources" title="Refresh input sources">↻</button>
+              <button id="recordBtn" class="record-btn" type="button">● Record</button>
+              <span id="recordTimer" class="record-timer">00:00</span>
+            </div>
+          </div>
+
+          <dialog id="recorderInstallDialog" class="recorder-install-dialog">
+            <div class="recorder-install-header">
+              <div>
+                <p class="record-kicker">SYSTEM CAPTURE</p>
+                <h2>Install sysaudio-rec</h2>
+              </div>
+              <button id="recorderInstallCloseBtn" class="icon-btn" type="button" aria-label="Close install instructions">×</button>
+            </div>
+            <p id="recorderInstallIntro">System recording needs a local helper running on this computer.</p>
+            <pre><code id="recorderInstallCommands">git clone https://github.com/tangkk/web-media-inspector.git ~/Projects/web-media-inspector
+cd ~/Projects/web-media-inspector
+npm install
+npm run dev</code></pre>
+            <div class="recorder-install-actions">
+              <button id="copyRecorderInstallBtn" class="file-btn" type="button">Copy commands</button>
+              <a class="file-btn" href="https://github.com/tangkk/sysaudio-rec" target="_blank" rel="noreferrer">Open GitHub</a>
+            </div>
+            <p id="recorderInstallError" class="recorder-install-error" hidden></p>
+          </dialog>
 
           <details class="transcribe-panel" id="transcribePanel">
             <summary class="transcribe-summary">
