@@ -674,6 +674,7 @@ video.ready {
 .record-btn:hover, .record-btn.is-recording { background: #b91c1c; color: #fff; }
 .record-btn.is-recording { animation: record-pulse 1.3s ease-in-out infinite; }
 .record-timer { min-width: 42px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.save-record-btn { padding: 7px 12px; font-size: 12px; }
 @keyframes record-pulse { 50% { box-shadow: 0 0 0 5px rgba(185, 28, 28, .12); } }
 
 .recorder-install-dialog {

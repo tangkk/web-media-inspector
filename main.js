@@ -68,6 +68,7 @@ const recordTimerEl = document.getElementById('recordTimer');
 const recordIndicatorEl = document.getElementById('recordIndicator');
 const recordSourceSelect = document.getElementById('recordSource');
 const refreshRecordSourcesBtn = document.getElementById('refreshRecordSourcesBtn');
+const saveRecordBtn = document.getElementById('saveRecordBtn');
 const recorderInstallDialog = document.getElementById('recorderInstallDialog');
 const recorderInstallCloseBtn = document.getElementById('recorderInstallCloseBtn');
 const copyRecorderInstallBtn = document.getElementById('copyRecorderInstallBtn');
@@ -237,6 +238,7 @@ let systemRecording = {
   meterSamples: [],
 };
 let recordingDevicesLoaded = false;
+let lastRecordingFile = null;
 
 // Files selected through an <input> cannot be reopened from a path after a
 // browser restart. Keep one local browser-cache copy in IndexedDB instead;
@@ -655,6 +657,7 @@ async function startSystemRecording() {
     if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.disabled = true;
     recordBtn.classList.add('is-recording');
     recordBtn.textContent = '■ Stop recording';
+    if (saveRecordBtn) saveRecordBtn.disabled = true;
     recordIndicatorEl.className = 'record-indicator is-live';
     recordStatusEl.textContent = 'Recording system audio';
     recordHintEl.textContent = 'The audio meter will appear as soon as sysaudio-rec receives sound.';
@@ -699,7 +702,9 @@ async function stopSystemRecording() {
     if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.disabled = false;
     recordStatusEl.textContent = 'Recording ready';
     recordIndicatorEl.className = 'record-indicator';
-    recordHintEl.textContent = 'The finished MP3 has been loaded into the inspector.';
+    recordHintEl.textContent = 'The finished MP3 has been loaded into the inspector. Use “Save as…” to keep a copy.';
+    lastRecordingFile = file;
+    if (saveRecordBtn) saveRecordBtn.disabled = false;
     if (isDesktopPlaylistEnabled()) {
       const previousActivePlaylistId = activePlaylistId;
       addFilesToPlaylist([file]);
@@ -723,9 +728,48 @@ async function stopSystemRecording() {
   }
 }
 
+async function saveRecordingAs() {
+  if (!lastRecordingFile || !saveRecordBtn) return;
+  const suggestedName = lastRecordingFile.name;
+  saveRecordBtn.disabled = true;
+  try {
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName,
+          types: [{ description: 'MP3 audio', accept: { 'audio/mpeg': ['.mp3'] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(lastRecordingFile);
+        await writable.close();
+        setStatus(`Saved ${handle.name}.`);
+        return;
+      } catch (error) {
+        if (error?.name === 'AbortError') return; // user cancelled the picker
+        console.warn('[recording] showSaveFilePicker failed, falling back to download:', error);
+      }
+    }
+    // Fallback for browsers without the File System Access API: a normal
+    // download. Browsers that ask "where to save" for downloads will still
+    // prompt for a location; others save straight to the Downloads folder.
+    const url = URL.createObjectURL(lastRecordingFile);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = suggestedName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus('Recording downloaded.');
+  } finally {
+    saveRecordBtn.disabled = false;
+  }
+}
+
 if (recordBtn) recordBtn.addEventListener('click', () => {
   if (systemRecording.active) stopSystemRecording(); else startSystemRecording();
 });
+if (saveRecordBtn) saveRecordBtn.addEventListener('click', saveRecordingAs);
 if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.addEventListener('click', () => loadRecordingDevices({ force: true }));
 if (recordSourceSelect) loadRecordingDevices();
 if (recorderInstallCloseBtn) recorderInstallCloseBtn.addEventListener('click', () => recorderInstallDialog.close());
