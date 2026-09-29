@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, stat, readdir, unlink } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -16,6 +16,13 @@ const projectRecorder = join(homedir(), 'Projects', 'sysaudio-rec', '.build', 'r
 const installedRecorder = join(homedir(), 'sysaudio-rec');
 const recordBinary = process.env.SYS_RECORD_BIN || (existsSync(projectRecorder) ? projectRecorder : installedRecorder);
 const recordingDir = join('/tmp', 'web-media-inspector-recordings');
+// How long a finished recording is kept in recordingDir before it is deleted
+// automatically. Set RECORDING_RETENTION_DAYS=0 to disable cleanup entirely.
+const retentionDays = Number.isFinite(Number(process.env.RECORDING_RETENTION_DAYS))
+  ? Number(process.env.RECORDING_RETENTION_DAYS)
+  : 7;
+const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
+const cleanupIntervalMs = Math.min(6 * 60 * 60 * 1000, Math.max(retentionMs, 60 * 1000));
 let activeRecording = null;
 const allowedBrowserOrigins = new Set([
   'https://tangkk.github.io',
@@ -28,6 +35,33 @@ function recordLog(event, details = {}) {
 }
 
 await mkdir(recordingDir, { recursive: true });
+
+async function cleanupOldRecordings() {
+  if (!(retentionMs > 0)) return;
+  const cutoff = Date.now() - retentionMs;
+  let entries;
+  try {
+    entries = await readdir(recordingDir);
+  } catch (error) {
+    return;
+  }
+  for (const name of entries) {
+    const path = join(recordingDir, name);
+    if (activeRecording?.outputPath === path) continue; // never delete a recording in progress
+    try {
+      const info = await stat(path);
+      if (info.isFile() && info.mtimeMs < cutoff) {
+        await unlink(path);
+        recordLog('cleanup-deleted', { path, ageDays: Math.round((Date.now() - info.mtimeMs) / 86400000) });
+      }
+    } catch (error) {
+      recordLog('cleanup-failed', { path, error: error.message });
+    }
+  }
+}
+
+await cleanupOldRecordings();
+if (retentionMs > 0) setInterval(cleanupOldRecordings, cleanupIntervalMs);
 
 function json(res, status, payload) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -231,4 +265,5 @@ const server = createServer(async (req, res) => {
 server.listen(port, host, () => {
   console.log(`${serviceOnly ? 'Recording bridge' : 'Web Media Inspector'} listening on http://${host}:${port}`);
   console.log(`System recorder: ${recordBinary}`);
+  console.log(`Recording retention: ${retentionMs > 0 ? `${retentionDays} day(s)` : 'disabled'} (${recordingDir})`);
 });
