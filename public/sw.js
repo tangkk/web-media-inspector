@@ -37,7 +37,9 @@ self.addEventListener('fetch', (event) => {
       const cached = await cache.match(request);
       if (cached) return cached;
       const response = await fetch(request);
-      if (response.ok) {
+      // Behind a login gate an expired session turns asset requests into a
+      // redirect to the login page; never cache that under the asset URL.
+      if (response.ok && !response.redirected) {
         cache.put(request, response.clone());
       }
       return response;
