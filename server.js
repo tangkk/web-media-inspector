@@ -26,6 +26,7 @@ const cleanupIntervalMs = Math.min(6 * 60 * 60 * 1000, Math.max(retentionMs, 60 
 let activeRecording = null;
 const allowedBrowserOrigins = new Set([
   'https://tangkk.github.io',
+  'https://media.tangkk-x2o.com',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
 ]);
