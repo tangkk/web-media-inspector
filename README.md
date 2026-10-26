@@ -140,6 +140,25 @@ If you want a practical transcription helper rather than a full DAW, this is the
 
 ---
 
+## Roadmap
+
+### Split points inside an A-B loop (planned, not implemented)
+
+Divide one A-B range into sub-ranges with split points `S1`, `S2`, … so the playhead loops inside a single sub-range (`[A,S1]`, `[S1,S2]`, …, `[Sn,B]`).
+
+- **Model**: keep `loopState.start/end` as the outer A/B and add `splits` (sorted times between A and B), `activeSegment`, and `segmentLock`. A `getActiveLoopRange()` helper returns the current sub-range when locked, otherwise the full A-B.
+- **Uses the sub-range**: loop wrap-around, play-from-start, `forceSeekToLoopStart`, the short audio loop, and transcription. A/B handle dragging and the A/B markers stay on the outer range.
+- **Interaction**:
+  - `S` button / `s` key adds a split at the playhead, inside A-B and at least a minimum gap from its neighbours.
+  - Clicking a segment on the waveform activates it; `[` / `]` switch to the previous or next segment.
+  - A lock toggle (`l`) switches between looping one segment and the whole A-B.
+  - Split markers can be dragged between their neighbours; Alt-click removes one.
+  - `Esc` clears A/B and all splits. Splits that end up outside A-B after dragging A or B are dropped.
+- **Display**: thin labelled lines for `S1…Sn`, the active segment highlighted, and a status line such as `Looping S2 · 0:12 → 0:18 (2/4)`.
+- **Persistence**: save `splits`, `activeSegment`, and `segmentLock` in the session snapshot, and drop invalid splits on restore.
+
+---
+
 ## Local development
 
 ```bash
