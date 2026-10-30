@@ -67,6 +67,8 @@ const recordHintEl = document.getElementById('recordHint');
 const recordTimerEl = document.getElementById('recordTimer');
 const recordIndicatorEl = document.getElementById('recordIndicator');
 const recordSourceSelect = document.getElementById('recordSource');
+const recordChannelControl = document.getElementById('recordChannelControl');
+const recordChannelSelect = document.getElementById('recordChannel');
 const refreshRecordSourcesBtn = document.getElementById('refreshRecordSourcesBtn');
 const saveRecordBtn = document.getElementById('saveRecordBtn');
 const recorderInstallDialog = document.getElementById('recorderInstallDialog');
@@ -238,6 +240,7 @@ let systemRecording = {
   meterSamples: [],
 };
 let recordingDevicesLoaded = false;
+let recordingDevices = [];
 let lastRecordingFile = null;
 
 // Files selected through an <input> cannot be reopened from a path after a
@@ -511,6 +514,23 @@ function recordingApi(path) {
   return `${recordingApiBase}/api/record${path}`;
 }
 
+function updateRecordingChannelOptions() {
+  if (!recordChannelControl || !recordChannelSelect) return;
+  const device = recordingDevices.find((entry) => entry.name === recordSourceSelect?.value);
+  recordChannelControl.hidden = !device || device.inputChannels < 2;
+  if (!device || device.inputChannels < 2) return;
+
+  const previousChannel = recordChannelSelect.value;
+  recordChannelSelect.replaceChildren();
+  for (let channel = 1; channel <= device.inputChannels; channel += 1) {
+    recordChannelSelect.add(new Option(`Input ${channel} (CH${channel}) · centered mono`, String(channel)));
+  }
+  recordChannelSelect.add(new Option('All inputs · mono mix', 'mix'));
+  recordChannelSelect.value = [...recordChannelSelect.options].some((option) => option.value === previousChannel)
+    ? previousChannel
+    : '1';
+}
+
 async function loadRecordingDevices({ force = false } = {}) {
   if (!recordSourceSelect || (recordingDevicesLoaded && !force)) return;
   const selectedDevice = recordSourceSelect.value;
@@ -519,12 +539,14 @@ async function loadRecordingDevices({ force = false } = {}) {
     const response = await fetch(recordingApi('/devices'), { cache: 'no-store' });
     const result = await readRecordingApiResponse(response);
     if (!response.ok) throw new Error(result.error || 'Could not load input sources.');
+    recordingDevices = result.devices || [];
     recordSourceSelect.replaceChildren(new Option('Loopback / System audio (default)', ''));
-    (result.devices || []).forEach((device) => {
+    recordingDevices.forEach((device) => {
       const label = `${device.name} · ${device.inputChannels} ch · ${device.sampleRate} Hz`;
       recordSourceSelect.add(new Option(label, device.name));
     });
     recordSourceSelect.value = selectedDevice;
+    updateRecordingChannelOptions();
     recordingDevicesLoaded = true;
     console.info('[recording] input sources loaded', result.devices);
   } catch (error) {
@@ -644,7 +666,9 @@ async function startSystemRecording() {
     recordHintEl.textContent = 'Starting sysaudio-rec locally.';
   try {
     const device = recordSourceSelect?.value || '';
-    const response = await fetch(recordingApi('/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(device ? { device } : {}) });
+    const channel = recordChannelSelect?.value || '';
+    const requestBody = device ? { device, ...(channel ? { channel } : {}) } : {};
+    const response = await fetch(recordingApi('/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
     const result = await readRecordingApiResponse(response);
     if (!response.ok) {
       if (result.code === 'RECORDER_NOT_INSTALLED') showRecorderInstallDialog(result.error, 'recorder');
@@ -654,6 +678,7 @@ async function startSystemRecording() {
     systemRecording = { active: true, id: result.id, startedAt: Date.now(), rafId: null, statusTimer: null, lastFileSize: 0, meterSamples: [] };
     recordBtn.disabled = false;
     if (recordSourceSelect) recordSourceSelect.disabled = true;
+    if (recordChannelSelect) recordChannelSelect.disabled = true;
     if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.disabled = true;
     recordBtn.classList.add('is-recording');
     recordBtn.textContent = '■ Stop recording';
@@ -670,6 +695,7 @@ async function startSystemRecording() {
     if (!systemRecording.active) showRecorderInstallDialog(error.message || 'The local recording service could not be reached.', 'service');
     recordBtn.disabled = false;
     if (recordSourceSelect) recordSourceSelect.disabled = false;
+    if (recordChannelSelect) recordChannelSelect.disabled = false;
     if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.disabled = false;
     recordStatusEl.textContent = 'Ready to record';
     recordHintEl.textContent = error.message || 'Could not start system audio capture.';
@@ -699,6 +725,7 @@ async function stopSystemRecording() {
     recordBtn.textContent = '● Record';
     recordBtn.disabled = false;
     if (recordSourceSelect) recordSourceSelect.disabled = false;
+    if (recordChannelSelect) recordChannelSelect.disabled = false;
     if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.disabled = false;
     recordStatusEl.textContent = 'Recording ready';
     recordIndicatorEl.className = 'record-indicator';
@@ -771,6 +798,7 @@ if (recordBtn) recordBtn.addEventListener('click', () => {
 });
 if (saveRecordBtn) saveRecordBtn.addEventListener('click', saveRecordingAs);
 if (refreshRecordSourcesBtn) refreshRecordSourcesBtn.addEventListener('click', () => loadRecordingDevices({ force: true }));
+if (recordSourceSelect) recordSourceSelect.addEventListener('change', updateRecordingChannelOptions);
 if (recordSourceSelect) loadRecordingDevices();
 if (recorderInstallCloseBtn) recorderInstallCloseBtn.addEventListener('click', () => recorderInstallDialog.close());
 if (copyRecorderInstallBtn) copyRecorderInstallBtn.addEventListener('click', async () => {

@@ -95,7 +95,13 @@ async function startRecording(req, res) {
   const id = randomUUID();
   const outputPath = join(recordingDir, `system-recording-${id}.mp3`);
   const args = ['--no-gui', '--meter', outputPath];
-  if (body.device) args.unshift('--device', String(body.device));
+  if (body.device) {
+    args.unshift('--device', String(body.device));
+    if (body.channel === 'mix') args.unshift('--mono-mix');
+    else if (Number.isInteger(Number(body.channel)) && Number(body.channel) > 0) {
+      args.unshift('--channel', String(Number(body.channel)));
+    }
+  }
   recordLog('starting', { id, binary: recordBinary, args, outputPath });
 
   const child = spawn(recordBinary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
