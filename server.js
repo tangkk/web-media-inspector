@@ -92,16 +92,25 @@ async function startRecording(req, res) {
   }
 
   const body = await readBody(req);
+  const device = typeof body.device === 'string' ? body.device.trim() : '';
+  const channel = body.channel;
+  if (channel != null && channel !== '' && !device) {
+    return json(res, 400, { error: 'Choose an input device before choosing a channel.' });
+  }
+  if (device && channel != null && channel !== '' && channel !== 'mix'
+      && (!Number.isInteger(Number(channel)) || Number(channel) < 1)) {
+    return json(res, 400, { error: 'The selected input channel is invalid.' });
+  }
+
   const id = randomUUID();
   const outputPath = join(recordingDir, `system-recording-${id}.mp3`);
   const args = ['--no-gui', '--meter', outputPath];
-  if (body.device) {
-    args.unshift('--device', String(body.device));
-    if (body.channel === 'mix') args.unshift('--mono-mix');
-    else if (Number.isInteger(Number(body.channel)) && Number(body.channel) > 0) {
-      args.unshift('--channel', String(Number(body.channel)));
-    }
+  if (device) {
+    args.unshift('--device', device);
+    if (channel === 'mix') args.unshift('--mono-mix');
+    else if (channel != null && channel !== '') args.unshift('--channel', String(Number(channel)));
   }
+  recordLog('start-request', { id, device: device || 'system-audio', channel: channel || 'default' });
   recordLog('starting', { id, binary: recordBinary, args, outputPath });
 
   const child = spawn(recordBinary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
