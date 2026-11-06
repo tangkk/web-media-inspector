@@ -663,6 +663,49 @@ video.ready {
 .record-source select { max-width: 210px; min-width: 150px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--text); font: inherit; }
 .record-source[hidden] { display: none; }
 .record-source[for="recordChannel"] select { max-width: 250px; min-width: 190px; }
+.record-level-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.record-meter-label { font-weight: 600; }
+.record-meter-track {
+  position: relative;
+  width: 96px;
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid #d6d6cf;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #e8f3e9 0 80%, #fff1c2 80% 95%, #f8d8d5 95% 100%);
+}
+.record-meter-rms {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: inherit;
+  background: #39a65a;
+  transition: width 70ms linear;
+}
+.record-meter-track.is-hot .record-meter-rms { background: #e56b21; }
+.record-meter-peak {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  left: 0;
+  width: 2px;
+  background: #202020;
+  transform: translateX(-1px);
+}
+.record-meter-db { min-width: 52px; text-align: right; }
+.record-clip-indicator {
+  color: #b91c1c;
+  font-size: 10px;
+  letter-spacing: .04em;
+}
+.record-clip-indicator[hidden] { display: none; }
 .record-btn {
   border: 1px solid #b91c1c;
   border-radius: 999px;

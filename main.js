@@ -69,6 +69,11 @@ const recordIndicatorEl = document.getElementById('recordIndicator');
 const recordSourceSelect = document.getElementById('recordSource');
 const recordChannelControl = document.getElementById('recordChannelControl');
 const recordChannelSelect = document.getElementById('recordChannel');
+const recordMeterTrack = document.getElementById('recordMeterTrack');
+const recordMeterRmsEl = document.getElementById('recordMeterRms');
+const recordMeterPeakEl = document.getElementById('recordMeterPeak');
+const recordMeterDbEl = document.getElementById('recordMeterDb');
+const recordClipIndicatorEl = document.getElementById('recordClipIndicator');
 const refreshRecordSourcesBtn = document.getElementById('refreshRecordSourcesBtn');
 const saveRecordBtn = document.getElementById('saveRecordBtn');
 const recorderInstallDialog = document.getElementById('recorderInstallDialog');
@@ -238,6 +243,7 @@ let systemRecording = {
   statusTimer: null,
   lastFileSize: 0,
   meterSamples: [],
+  clipped: false,
 };
 let recordingDevicesLoaded = false;
 let recordingDevices = [];
@@ -597,6 +603,28 @@ function showRecorderInstallDialog(message = '', mode = 'service') {
   if (!recorderInstallDialog.open) recorderInstallDialog.showModal();
 }
 
+function updateRecordingLevelMeter(level = 0, peak = 0, clipped = false) {
+  const safeLevel = Math.max(0, Math.min(1, Number(level) || 0));
+  const safePeak = Math.max(0, Math.min(1, Number(peak) || 0));
+  const toMeterPosition = (value) => value > 0
+    ? Math.max(0, Math.min(100, ((20 * Math.log10(value) + 60) / 60) * 100))
+    : 0;
+  const peakPosition = toMeterPosition(safePeak);
+  if (recordMeterRmsEl) recordMeterRmsEl.style.width = `${toMeterPosition(safeLevel)}%`;
+  if (recordMeterPeakEl) recordMeterPeakEl.style.left = `${peakPosition}%`;
+  if (recordMeterTrack) {
+    recordMeterTrack.setAttribute('aria-valuenow', String(Math.round(peakPosition)));
+    recordMeterTrack.classList.toggle('is-hot', safePeak >= 0.9);
+  }
+  if (recordMeterDbEl) {
+    recordMeterDbEl.textContent = safePeak > 0
+      ? `${(20 * Math.log10(safePeak)).toFixed(1)} dBFS`
+      : '−∞ dBFS';
+  }
+  systemRecording.clipped ||= Boolean(clipped) || safePeak >= 0.999;
+  if (recordClipIndicatorEl) recordClipIndicatorEl.hidden = !systemRecording.clipped;
+}
+
 function drawLiveRecordingWaveform({ schedule = true } = {}) {
   if (!systemRecording.active) return;
   resizeCanvasForDisplay();
@@ -647,6 +675,7 @@ async function refreshRecordingStatus() {
     const fileProgress = status.fileSize > systemRecording.lastFileSize;
     systemRecording.lastFileSize = status.fileSize || systemRecording.lastFileSize;
     systemRecording.meterSamples = status.meter?.samples || [];
+    updateRecordingLevelMeter(status.meter?.level, status.meter?.peak, status.meter?.clipped);
     if (!status.processAlive) console.error('[recording] sysaudio-rec is no longer running', status);
     drawLiveRecordingWaveform({ schedule: false });
     recordTimerEl.textContent = formatRecordTime(elapsed);
@@ -704,7 +733,8 @@ async function startSystemRecording() {
       throw new Error(result.error || 'Could not start sysaudio-rec.');
     }
     console.info('[recording] sysaudio-rec started', result);
-    systemRecording = { active: true, id: result.id, startedAt: Date.now(), rafId: null, statusTimer: null, lastFileSize: 0, meterSamples: [] };
+    systemRecording = { active: true, id: result.id, startedAt: Date.now(), rafId: null, statusTimer: null, lastFileSize: 0, meterSamples: [], clipped: false };
+    updateRecordingLevelMeter(0, 0, false);
     recordBtn.disabled = false;
     if (recordSourceSelect) recordSourceSelect.disabled = true;
     if (recordChannelSelect) recordChannelSelect.disabled = true;

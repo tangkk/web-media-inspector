@@ -115,15 +115,18 @@ async function startRecording(req, res) {
 
   const child = spawn(recordBinary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const logs = [];
-  const meter = { level: 0, peak: 0, samples: [] };
+  const meter = { level: 0, peak: 0, clipped: false, samples: [] };
   let stdoutBuffer = '';
   const handleLine = (line) => {
     line = line.trim();
     if (!line) return;
       const meterMatch = /^METER\s+([\d.]+)(?:\s+([\d.]+))?$/.exec(line);
       if (meterMatch) {
-        meter.level = Math.max(0, Math.min(1, Number(meterMatch[1])));
-        meter.peak = Math.max(0, Math.min(1, Number(meterMatch[2] || meterMatch[1])));
+        const level = Number(meterMatch[1]);
+        const peak = Number(meterMatch[2] || meterMatch[1]);
+        meter.level = Math.max(0, Math.min(1, level));
+        meter.peak = Math.max(0, Math.min(1, peak));
+        if (peak >= 0.999) meter.clipped = true;
         meter.samples.push(Math.max(meter.level, meter.peak));
         if (meter.samples.length > 600) meter.samples.shift();
         return;

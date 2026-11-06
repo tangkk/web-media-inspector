@@ -201,6 +201,15 @@
                 <span>Channel</span>
                 <select id="recordChannel"></select>
               </label>
+              <div class="record-level-meter" aria-label="Recording input level">
+                <span class="record-meter-label">RMS</span>
+                <div id="recordMeterTrack" class="record-meter-track" role="meter" aria-label="Input RMS level with peak marker" title="RMS level; marker and dBFS readout show peak" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                  <span id="recordMeterRms" class="record-meter-rms"></span>
+                  <span id="recordMeterPeak" class="record-meter-peak"></span>
+                </div>
+                <span id="recordMeterDb" class="record-meter-db">−∞ dBFS</span>
+                <strong id="recordClipIndicator" class="record-clip-indicator" hidden>CLIP</strong>
+              </div>
               <button id="refreshRecordSourcesBtn" class="icon-btn" type="button" aria-label="Refresh input sources" title="Refresh input sources">↻</button>
               <button id="recordBtn" class="record-btn" type="button">● Record</button>
               <span id="recordTimer" class="record-timer">00:00</span>
