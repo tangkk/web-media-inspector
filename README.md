@@ -36,6 +36,7 @@ Web Media Inspector is designed to make that process feel quick and direct.
 - **slow down playback** for hard passages
 - **zoom into the waveform** for precise navigation
 - **scrub quickly** through the material
+- keep each playlist file's playhead, A/B loop, speed, and waveform zoom when switching files or restoring a session
 
 ### EQ for hearing through the mix
 

@@ -274,27 +274,46 @@ async function requestPersistentSessionStorage() {
 
 function getSessionSnapshot() {
   const activeItem = playlistItems.find((item) => item.id === activePlaylistId) || null;
-  const mediaFile = currentFile || activeItem?.file;
+  const mediaFile = activeItem?.file || currentFile;
   if (!mediaFile) return null;
+  const activePlayback = activeItem
+    ? (activeItem.state === 'current' ? capturePlaybackState() : activeItem.playbackState)
+    : capturePlaybackState();
   return {
     version: 1,
     media: { name: mediaFile.name, type: mediaFile.type, size: mediaFile.size, lastModified: mediaFile.lastModified },
-    playhead: Number.isFinite(video.currentTime) ? video.currentTime : 0,
-    loop: { ...loopState },
-    speed: playbackRate,
-    zoom: zoomLevel,
+    ...activePlayback,
     playlist: playlistItems.map((item) => ({
       id: item.id,
       name: item.file.name,
       type: item.file.type,
       size: item.file.size,
       lastModified: item.file.lastModified,
-      playbackTime: item.id === activePlaylistId && Number.isFinite(video.currentTime)
-        ? video.currentTime
-        : (Number(item.playbackTime) || 0),
+      ...(item.id === activePlaylistId && item.state === 'current'
+        ? capturePlaybackState()
+        : item.playbackState),
     })),
     activePlaylistId,
     savedAt: Date.now(),
+  };
+}
+
+function capturePlaybackState() {
+  return {
+    playhead: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+    loop: { ...loopState },
+    speed: playbackRate,
+    zoom: zoomLevel,
+  };
+}
+
+function savedPlaylistPlaybackState(entry, legacyActiveState = null) {
+  const source = legacyActiveState || entry;
+  return {
+    playhead: Number(source.playhead ?? source.playbackTime) || 0,
+    loop: source.loop || { enabledA: false, enabledB: false, start: 0, end: 0 },
+    speed: Number(source.speed) || 1,
+    zoom: Number(source.zoom) || 1,
   };
 }
 
@@ -389,8 +408,8 @@ function getSavedSession() {
   }
 }
 
-function applyRestoredSession(saved) {
-  updatePlaybackRate(saved.speed);
+function applyPlaybackState(saved) {
+  updatePlaybackRate(Number(saved.speed) || 1);
   zoomLevel = Math.max(1, Math.min(24, Number(saved.zoom) || 1));
   zoomSlider.value = String(zoomLevel);
   updateZoomLabel();
@@ -409,6 +428,13 @@ function applyRestoredSession(saved) {
   lastDrawnProgress = -1;
   drawWaveform(duration ? playhead / duration : 0);
   updateTimeline(true);
+  updateViewportCursorVisibility();
+  if (zoomLevel > 1) {
+    const canvasCssWidth = parseFloat(waveCanvas.style.width || '0') || 0;
+    scrollWaveViewportToPlayhead(duration ? (playhead / duration) * canvasCssWidth : 0, 0.18);
+  } else {
+    waveViewport.scrollLeft = 0;
+  }
 }
 
 async function restoreLastSession() {
@@ -455,7 +481,10 @@ async function restoreLastSession() {
         id: entry.id,
         file,
         state: entry.id === savedActiveId ? 'loading' : 'waiting',
-        playbackTime: Number(entry.playbackTime) || 0,
+        playbackState: savedPlaylistPlaybackState(
+          entry,
+          entry.id === savedActiveId && entry.loop == null ? saved : null,
+        ),
       }));
     nextPlaylistId = Math.max(nextPlaylistId, ...playlistItems.map((item) => item.id + 1));
     activePlaylistId = savedActiveId;
@@ -471,7 +500,7 @@ async function restoreLastSession() {
     const item = playlistItems.find((entry) => entry.id === savedActiveId);
     if (item) item.state = 'current';
     renderPlaylist();
-    applyRestoredSession(saved);
+    applyPlaybackState(item.playbackState);
     setStatus(`Session restored: ${saved.media.name}`);
   } catch (error) {
     console.warn('Session restore failed:', error);
@@ -3080,7 +3109,7 @@ async function activatePlaylistItem(id) {
 
   const previous = playlistItems.find((entry) => entry.id === activePlaylistId);
   if (previous) {
-    previous.playbackTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    if (previous.state === 'current') previous.playbackState = capturePlaybackState();
     if (previous.state === 'current') previous.state = 'loaded';
   }
 
@@ -3092,11 +3121,7 @@ async function activatePlaylistItem(id) {
   if (activePlaylistId !== id) return;
 
   item.state = loaded ? 'current' : 'error';
-  if (loaded && item.playbackTime > 0) {
-    const duration = video.duration || decodedAudioBuffer?.duration || 0;
-    video.currentTime = Math.min(item.playbackTime, Math.max(0, duration - 0.01));
-    updateTimeline(true);
-  }
+  if (loaded) applyPlaybackState(item.playbackState);
   renderPlaylist();
   scheduleSessionSave();
 }
@@ -3109,7 +3134,7 @@ function addFilesToPlaylist(files) {
     id: nextPlaylistId++,
     file,
     state: 'waiting',
-    playbackTime: 0,
+    playbackState: savedPlaylistPlaybackState({}),
   }));
   playlistItems.push(...addedItems);
   renderPlaylist();
