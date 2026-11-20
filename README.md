@@ -37,6 +37,7 @@ Web Media Inspector is designed to make that process feel quick and direct.
 - **zoom into the waveform** for precise navigation
 - **scrub quickly** through the material
 - keep each playlist file's playhead, A/B loop, speed, and waveform zoom when switching files or restoring a session
+- restore files through small browser file handles where supported; media files are not copied into IndexedDB
 
 ### EQ for hearing through the mix
 

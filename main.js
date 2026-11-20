@@ -249,33 +249,26 @@ let recordingDevicesLoaded = false;
 let recordingDevices = [];
 let lastRecordingFile = null;
 
-// Files selected through an <input> cannot be reopened from a path after a
-// browser restart. Keep one local browser-cache copy in IndexedDB instead;
-// localStorage only holds the small, serializable playback state.
+// Browser file paths cannot grant access after a restart. Chrome's file handles
+// can be stored without copying the media bytes; playback state stays in localStorage.
 const SESSION_STORAGE_KEY = 'web-media-inspector:last-session:v1';
-const SESSION_DB_NAME = 'web-media-inspector-session';
-const SESSION_DB_STORE = 'media';
+const SESSION_DB_NAME = 'web-media-inspector-handles';
+const SESSION_DB_STORE = 'files';
+const LEGACY_SESSION_DB_NAME = 'web-media-inspector-session';
 const SESSION_MEDIA_KEY = 'last-media';
 let sessionSaveTimer = null;
 let isRestoringSession = false;
-const sessionCachedMediaKeys = new Set();
-let sessionStoragePersistenceRequested = false;
+let currentFileHandle = null;
+let pendingSessionRestore = null;
+const pendingReselectedFiles = new Map();
 
-function isSessionMediaReady() {
-  if (playlistItems.length) {
-    return playlistItems.every((item) => sessionCachedMediaKeys.has(getPlaylistMediaCacheKey(item.id)));
-  }
-  return sessionCachedMediaKeys.has(SESSION_MEDIA_KEY);
-}
-
-async function requestPersistentSessionStorage() {
-  if (sessionStoragePersistenceRequested || !navigator.storage?.persist) return;
-  sessionStoragePersistenceRequested = true;
-  try {
-    await navigator.storage.persist();
-  } catch (error) {
-    console.warn('Could not request persistent browser storage:', error);
-  }
+// The old database contains full copies of media files. Remove it even when
+// the user does not open Restore so the upgrade releases browser storage.
+function removeLegacyMediaCache() {
+  if (!('indexedDB' in window)) return;
+  const request = indexedDB.deleteDatabase(LEGACY_SESSION_DB_NAME);
+  request.onerror = () => console.warn('Could not remove old media cache:', request.error);
+  request.onblocked = () => console.warn('Old media cache is open in another tab; close it to finish cleanup.');
 }
 
 function getSessionSnapshot() {
@@ -324,13 +317,11 @@ function savedPlaylistPlaybackState(entry, legacyActiveState = null) {
 }
 
 function saveSessionState() {
-  if (isRestoringSession) return;
+  if (isRestoringSession || pendingSessionRestore) return;
   const snapshot = getSessionSnapshot();
   // On a fresh page load there is intentionally no in-memory media yet.
   // That must not erase the session the Restore button is about to use.
   if (!snapshot) return;
-  // Never point a session at media that has not finished writing to IndexedDB.
-  if (!isSessionMediaReady()) return;
   try {
     localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(snapshot));
   } catch (error) {
@@ -353,40 +344,44 @@ function openSessionDb() {
   });
 }
 
-async function putSessionMedia(file, key = SESSION_MEDIA_KEY) {
+async function putSessionHandle(handle, key = SESSION_MEDIA_KEY) {
+  if (!handle) return;
   const db = await openSessionDb();
   try {
     await new Promise((resolve, reject) => {
-      const request = db.transaction(SESSION_DB_STORE, 'readwrite').objectStore(SESSION_DB_STORE).put(file, key);
+      const request = db.transaction(SESSION_DB_STORE, 'readwrite').objectStore(SESSION_DB_STORE).put(handle, key);
       request.onsuccess = resolve;
-      request.onerror = () => reject(request.error || new Error('Could not cache media'));
+      request.onerror = () => reject(request.error || new Error('Could not save file handle'));
     });
   } finally {
     db.close();
   }
 }
 
-async function getSessionMedia(key = SESSION_MEDIA_KEY) {
+async function getSessionHandle(key = SESSION_MEDIA_KEY) {
   const db = await openSessionDb();
   try {
     return await new Promise((resolve, reject) => {
       const request = db.transaction(SESSION_DB_STORE, 'readonly').objectStore(SESSION_DB_STORE).get(key);
       request.onsuccess = () => resolve(request.result || null);
-      request.onerror = () => reject(request.error || new Error('Could not read cached media'));
+      request.onerror = () => reject(request.error || new Error('Could not read file handle'));
     });
   } finally {
     db.close();
   }
 }
 
-async function cacheCurrentMediaForSession(file) {
+async function deleteSessionHandle(key) {
   try {
-    await putSessionMedia(file);
-    sessionCachedMediaKeys.add(SESSION_MEDIA_KEY);
-    requestPersistentSessionStorage();
-    saveSessionState();
+    const db = await openSessionDb();
+    await new Promise((resolve, reject) => {
+      const request = db.transaction(SESSION_DB_STORE, 'readwrite').objectStore(SESSION_DB_STORE).delete(key);
+      request.onsuccess = resolve;
+      request.onerror = () => reject(request.error || new Error('Could not remove file handle'));
+    });
+    db.close();
   } catch (error) {
-    console.warn('Could not cache media for session restore:', error);
+    console.warn('Could not remove file handle:', error);
   }
 }
 
@@ -394,14 +389,30 @@ function getPlaylistMediaCacheKey(id) {
   return `playlist-media:${id}`;
 }
 
-async function cachePlaylistMedia(item) {
+async function savePlaylistHandle(item) {
+  if (!item.handle) {
+    await deleteSessionHandle(getPlaylistMediaCacheKey(item.id));
+    return;
+  }
   try {
-    await putSessionMedia(item.file, getPlaylistMediaCacheKey(item.id));
-    sessionCachedMediaKeys.add(getPlaylistMediaCacheKey(item.id));
-    requestPersistentSessionStorage();
-    saveSessionState();
+    await putSessionHandle(item.handle, getPlaylistMediaCacheKey(item.id));
   } catch (error) {
-    console.warn('Could not cache playlist media for session restore:', error);
+    console.warn('Could not save playlist file handle:', error);
+  }
+}
+
+async function getFileFromSessionHandle(handle) {
+  if (!handle || handle.kind !== 'file') return null;
+  try {
+    return await handle.getFile();
+  } catch (error) {
+    if (error.name !== 'NotAllowedError' || !handle.requestPermission) return null;
+    try {
+      if (await handle.requestPermission({ mode: 'read' }) === 'granted') return await handle.getFile();
+    } catch (permissionError) {
+      console.warn('Could not reopen file handle:', permissionError);
+    }
+    return null;
   }
 }
 
@@ -412,6 +423,16 @@ function getSavedSession() {
   } catch (error) {
     return null;
   }
+}
+
+function getSavedPlaylist(saved) {
+  return Array.isArray(saved.playlist) && saved.playlist.length
+    ? saved.playlist
+    : [{ id: 1, ...saved.media, playbackTime: saved.playhead }];
+}
+
+function matchesSavedFile(file, entry) {
+  return file.name === entry.name && file.size === entry.size && file.lastModified === entry.lastModified;
 }
 
 function applyPlaybackState(saved) {
@@ -445,7 +466,7 @@ function applyPlaybackState(saved) {
 
 async function restoreLastSession() {
   if (processingState.active) return;
-  const saved = getSavedSession();
+  const saved = pendingSessionRestore || getSavedSession();
   if (!saved) {
     setStatus('No saved session found');
     return;
@@ -453,39 +474,31 @@ async function restoreLastSession() {
   restoreSessionBtn.disabled = true;
   setStatus(`Restoring ${saved.media.name}…`);
   try {
-    const savedPlaylist = Array.isArray(saved.playlist) && saved.playlist.length
-      ? saved.playlist
-      : [{ id: 1, ...saved.media, playbackTime: saved.playhead }];
+    const savedPlaylist = getSavedPlaylist(saved);
     const savedActiveId = saved.activePlaylistId ?? savedPlaylist[0].id;
-    const restoredEntries = await Promise.all(savedPlaylist.map(async (entry) => {
-      const file = await getSessionMedia(getPlaylistMediaCacheKey(entry.id));
-      const matches = file && file.name === entry.name && file.size === entry.size && file.lastModified === entry.lastModified;
-      return { entry, file: matches ? file : null };
-    }));
-    // Sessions created before playlist caching only have the legacy current-media key.
-    if (!saved.playlist?.length) {
-      const legacyFile = await getSessionMedia();
-      const legacy = restoredEntries[0];
-      if (legacyFile && legacyFile.name === legacy.entry.name && legacyFile.size === legacy.entry.size && legacyFile.lastModified === legacy.entry.lastModified) {
-        legacy.file = legacyFile;
-        // Migrate the old one-file cache into the playlist-keyed format.
-        await putSessionMedia(legacyFile, getPlaylistMediaCacheKey(legacy.entry.id));
-      }
+    const restoredEntries = [];
+    for (const entry of savedPlaylist) {
+      const handle = pendingReselectedFiles.get(entry.id)?.handle
+        || await getSessionHandle(getPlaylistMediaCacheKey(entry.id))
+        || (!saved.playlist?.length ? await getSessionHandle() : null);
+      const file = pendingReselectedFiles.get(entry.id)?.file || await getFileFromSessionHandle(handle);
+      restoredEntries.push({ entry, file: file && matchesSavedFile(file, entry) ? file : null, handle });
     }
-    const activeEntry = restoredEntries.find(({ entry }) => entry.id === savedActiveId);
-    if (!activeEntry?.file) {
-      setStatus(`Media not found: ${saved.media.name}. A-B loop and playhead were not restored.`);
+    if (restoredEntries.some(({ file }) => !file)) {
+      pendingSessionRestore = saved;
+      const missing = restoredEntries.filter(({ file }) => !file).length;
+      setStatus(`${missing} saved file${missing === 1 ? '' : 's'} need access. Click Open and select the original files to restore.`);
       return;
     }
+    const activeEntry = restoredEntries.find(({ entry }) => entry.id === savedActiveId);
     isRestoringSession = true;
-    restoredEntries
-      .filter(({ file }) => file)
-      .forEach(({ entry }) => sessionCachedMediaKeys.add(getPlaylistMediaCacheKey(entry.id)));
+    pendingSessionRestore = null;
+    pendingReselectedFiles.clear();
     playlistItems = restoredEntries
-      .filter(({ file }) => file)
-      .map(({ entry, file }) => ({
+      .map(({ entry, file, handle }) => ({
         id: entry.id,
         file,
+        handle,
         state: entry.id === savedActiveId ? 'loading' : 'waiting',
         playbackState: savedPlaylistPlaybackState(
           entry,
@@ -494,13 +507,14 @@ async function restoreLastSession() {
       }));
     nextPlaylistId = Math.max(nextPlaylistId, ...playlistItems.map((item) => item.id + 1));
     activePlaylistId = savedActiveId;
+    currentFileHandle = activeEntry.handle;
     renderPlaylist();
     const loaded = await loadFile(activeEntry.file);
     if (!loaded) {
       const item = playlistItems.find((entry) => entry.id === savedActiveId);
       if (item) item.state = 'error';
       renderPlaylist();
-      setStatus(`Media not found or could not be loaded: ${saved.media.name}. A-B loop and playhead were not restored.`);
+      setStatus(`Could not load ${saved.media.name}.`);
       return;
     }
     const item = playlistItems.find((entry) => entry.id === savedActiveId);
@@ -510,7 +524,7 @@ async function restoreLastSession() {
     setStatus(`Session restored: ${saved.media.name}`);
   } catch (error) {
     console.warn('Session restore failed:', error);
-    setStatus(`Media not found: ${saved.media.name}. A-B loop and playhead were not restored.`);
+    setStatus(`Could not restore session: ${error.message || 'unknown error'}`);
   } finally {
     isRestoringSession = false;
     restoreSessionBtn.disabled = false;
@@ -793,12 +807,13 @@ async function stopSystemRecording() {
     if (saveRecordBtn) saveRecordBtn.disabled = false;
     if (isDesktopPlaylistEnabled()) {
       const previousActivePlaylistId = activePlaylistId;
-      addFilesToPlaylist([file]);
+      addFilesToPlaylist([{ file, handle: null }]);
       const recordingItem = playlistItems[playlistItems.length - 1];
       if (previousActivePlaylistId != null && recordingItem) {
         await activatePlaylistItem(recordingItem.id);
       }
     } else {
+      currentFileHandle = null;
       await loadFile(file);
     }
     setStatus('System recording loaded.');
@@ -3144,6 +3159,7 @@ async function activatePlaylistItem(id) {
   }
 
   activePlaylistId = id;
+  currentFileHandle = item.handle;
   item.state = 'loading';
   renderPlaylist();
   scheduleSessionSave();
@@ -3156,19 +3172,20 @@ async function activatePlaylistItem(id) {
   scheduleSessionSave();
 }
 
-function addFilesToPlaylist(files) {
-  const additions = Array.from(files || []).filter((file) => file instanceof File);
+function addFilesToPlaylist(entries) {
+  const additions = Array.from(entries || []).filter(({ file }) => file instanceof File);
   if (!additions.length) return;
 
-  const addedItems = additions.map((file) => ({
+  const addedItems = additions.map(({ file, handle }) => ({
     id: nextPlaylistId++,
     file,
+    handle: handle || null,
     state: 'waiting',
     playbackState: savedPlaylistPlaybackState({}),
   }));
   playlistItems.push(...addedItems);
   renderPlaylist();
-  addedItems.forEach((item) => cachePlaylistMedia(item));
+  addedItems.forEach(savePlaylistHandle);
   scheduleSessionSave();
 
   if (activePlaylistId == null) {
@@ -3183,6 +3200,7 @@ async function removePlaylistItem(id) {
 
   const wasActive = activePlaylistId === id;
   playlistItems.splice(index, 1);
+  deleteSessionHandle(getPlaylistMediaCacheKey(id));
   if (!wasActive) {
     renderPlaylist();
     scheduleSessionSave();
@@ -3199,6 +3217,7 @@ async function removePlaylistItem(id) {
 
 function clearPlaylist() {
   if (processingState.active) return;
+  playlistItems.forEach((item) => deleteSessionHandle(getPlaylistMediaCacheKey(item.id)));
   playlistItems = [];
   activePlaylistId = null;
   clearCurrentFile();
@@ -3262,8 +3281,7 @@ async function loadFile(file) {
     pushPipelineDebug('loadFile:before-buildWaveformFromFile');
     await buildWaveformFromFile(mediaFile, jobId);
     pushPipelineDebug('loadFile:after-buildWaveformFromFile');
-    if (!isRestoringSession) cacheCurrentMediaForSession(mediaFile);
-    else saveSessionState();
+    saveSessionState();
     return true;
   } catch (error) {
     console.error(error);
@@ -3370,6 +3388,7 @@ function clearCurrentFile() {
   currentJobId += 1;
   currentTranscribeJobId += 1;
   currentFile = null;
+  currentFileHandle = null;
   renderMediaMetadata({});
   viewerCard.classList.remove('audio-mode');
   lastKnownDuration = 0;
@@ -4256,15 +4275,91 @@ async function triggerOpenFilePicker({ warmupAudio = true } = {}) {
       if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
       }
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
-      }
+      if (audioContext.state === 'suspended') audioContext.resume().catch((error) => {
+        console.warn('AudioContext warmup failed:', error);
+      });
     } catch (error) {
       console.warn('AudioContext warmup failed:', error);
     }
   }
 
+  if (window.showOpenFilePicker) {
+    let handles;
+    try {
+      handles = await window.showOpenFilePicker({ multiple: isDesktopPlaylistEnabled() });
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+      console.warn('File handle picker unavailable; using file input:', error);
+    }
+    if (handles) {
+      const entries = await Promise.all(handles.map(async (handle) => ({
+        file: await handle.getFile(), handle,
+      })));
+      await handleMediaSelection(entries);
+      return;
+    }
+  }
   videoFileInput.click();
+}
+
+async function handleMediaSelection(entries) {
+  if (!entries.length) return;
+  if (pendingSessionRestore) {
+    const savedEntries = getSavedPlaylist(pendingSessionRestore);
+    let matched = 0;
+    for (const selected of entries) {
+      const savedEntry = savedEntries.find((entry) => matchesSavedFile(selected.file, entry));
+      if (!savedEntry) continue;
+      pendingReselectedFiles.set(savedEntry.id, selected);
+      if (selected.handle) {
+        try {
+          await putSessionHandle(selected.handle, getPlaylistMediaCacheKey(savedEntry.id));
+        } catch (error) {
+          console.warn('Could not save selected file handle:', error);
+        }
+      }
+      matched += 1;
+    }
+    if (matched) {
+      await restoreLastSession();
+      return;
+    }
+    pendingSessionRestore = null;
+    pendingReselectedFiles.clear();
+  }
+
+  if (isDesktopPlaylistEnabled()) {
+    addFilesToPlaylist(entries);
+  } else {
+    playlistItems = [];
+    activePlaylistId = null;
+    renderPlaylist();
+    currentFileHandle = entries[0].handle || null;
+    if (currentFileHandle) {
+      try {
+        await putSessionHandle(currentFileHandle);
+      } catch (error) {
+        console.warn('Could not save selected file handle:', error);
+      }
+    } else {
+      await deleteSessionHandle(SESSION_MEDIA_KEY);
+    }
+    await loadFile(entries[0].file);
+    scheduleSessionSave();
+  }
+}
+
+async function getDroppedMediaEntries(event) {
+  const files = Array.from(event.dataTransfer?.files || []);
+  const items = Array.from(event.dataTransfer?.items || []).filter((item) => item.kind === 'file');
+  // Call getAsFileSystemHandle synchronously during the drop gesture.
+  const handlePromises = items.map((item) => item.getAsFileSystemHandle
+    ? item.getAsFileSystemHandle().catch(() => null)
+    : null);
+  return Promise.all(files.map(async (file, index) => ({
+    file,
+    handle: await handlePromises[index] || null,
+  })));
 }
 
 openFileBtn.addEventListener('click', () => {
@@ -4274,15 +4369,8 @@ openFileBtn.addEventListener('click', () => {
 if (restoreSessionBtn) restoreSessionBtn.addEventListener('click', restoreLastSession);
 
 videoFileInput.addEventListener('change', (event) => {
-  const files = Array.from(event.target.files || []);
-  if (isDesktopPlaylistEnabled()) {
-    addFilesToPlaylist(files);
-  } else {
-    playlistItems = [];
-    activePlaylistId = null;
-    renderPlaylist();
-    if (files[0]) loadFile(files[0]);
-  }
+  const entries = Array.from(event.target.files || []).map((file) => ({ file, handle: null }));
+  handleMediaSelection(entries);
   event.target.value = '';
 });
 
@@ -4341,13 +4429,13 @@ if (playlistPanel) {
     if (playlistDragDepth === 0) playlistPanel.classList.remove('is-dragover');
   });
 
-  playlistPanel.addEventListener('drop', (event) => {
+  playlistPanel.addEventListener('drop', async (event) => {
     if (!isDesktopPlaylistEnabled()) return;
     event.preventDefault();
     playlistDragDepth = 0;
     playlistPanel.classList.remove('is-dragover');
     if (processingState.active) return;
-    addFilesToPlaylist(event.dataTransfer?.files || []);
+    await handleMediaSelection(await getDroppedMediaEntries(event));
   });
 }
 if (debugToggleBtn) debugToggleBtn.addEventListener('click', toggleDebugUi);
@@ -4885,17 +4973,9 @@ window.addEventListener('keydown', (event) => {
   });
 });
 
-dropZone.addEventListener('drop', (event) => {
+dropZone.addEventListener('drop', async (event) => {
   if (processingState.active) return;
-  const files = Array.from(event.dataTransfer?.files || []);
-  if (isDesktopPlaylistEnabled()) {
-    addFilesToPlaylist(files);
-  } else if (files[0]) {
-    playlistItems = [];
-    activePlaylistId = null;
-    renderPlaylist();
-    loadFile(files[0]);
-  }
+  await handleMediaSelection(await getDroppedMediaEntries(event));
 });
 
 dropZone.addEventListener('click', (event) => {
@@ -5029,6 +5109,7 @@ window.addEventListener('beforeunload', () => {
 playlistMediaQuery.addEventListener('change', syncPlaylistFileInput);
 
 syncPlaylistFileInput();
+removeLegacyMediaCache();
 renderPlaylist();
 updateProcessingUi();
 updateLoopButtons();
