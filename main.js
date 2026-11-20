@@ -267,8 +267,14 @@ const pendingReselectedFiles = new Map();
 function removeLegacyMediaCache() {
   if (!('indexedDB' in window)) return;
   const request = indexedDB.deleteDatabase(LEGACY_SESSION_DB_NAME);
-  request.onerror = () => console.warn('Could not remove old media cache:', request.error);
-  request.onblocked = () => console.warn('Old media cache is open in another tab; close it to finish cleanup.');
+  request.onerror = () => {
+    console.warn('Could not remove old media cache:', request.error);
+    setStatus('Could not remove old media cache. Close other tabs for this site and reload.');
+  };
+  request.onblocked = () => {
+    console.warn('Old media cache is open in another tab; close it to finish cleanup.');
+    setStatus('Old media cache is still open in another tab. Close that tab to finish cleanup.');
+  };
 }
 
 function getSessionSnapshot() {
